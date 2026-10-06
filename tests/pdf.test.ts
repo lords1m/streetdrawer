@@ -164,10 +164,10 @@ describe('Inhaltsstrom-Interpreter', () => {
     expect(Array.from(ex.coords)).toEqual([500, 500, 510, 500]);
   });
 
-  it('Dichteübersicht zählt Punkte', async () => {
+  it('Dichteübersicht trägt Segmente entlang ihrer Länge ein', async () => {
     const pdf = buildPdf({ mode: 'classic', pages: ['0 0 m 600 0 l S'] });
     const scan = await scanPdf(blobOf(pdf), 0);
-    expect(scan.density.cells.reduce((a, b) => a + b, 0)).toBe(2);
+    expect(scan.density.cells.reduce((a, b) => a + b, 0)).toBeGreaterThan(50);
   });
 
   it('Schlüssel-Kodierung ist umkehrbar', () => {

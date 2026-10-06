@@ -4,6 +4,7 @@ import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { makePdf, drawAlong } from './e2e-helpers.mjs';
 
 const out = process.env.E2E_OUT || path.join(os.tmpdir(), 'sz-e2e');
 fs.mkdirSync(out, { recursive: true });
@@ -15,59 +16,6 @@ if (!process.env.E2E_PROD) await server.listen();
 const base = (server.resolvedUrls ?? { local: ['http://localhost:5198/'] }).local[0];
 
 
-function makePdf() {
-  // 11x11-Gitter, Linien alle 40 pt (zwei Strichstärken), Hintergrundfläche
-  let c = '0.95 g 0 0 612 792 re f
-0.2 0.2 0.2 RG 1 w
-';
-  for (let i = 0; i <= 10; i++) { c += `${100 + i * 40} 100 m ${100 + i * 40} 500 l S
-`; }
-  c += '0.5 w 0.6 0.1 0.1 RG
-';
-  for (let i = 0; i <= 10; i++) { c += `100 ${100 + i * 40} m 500 ${100 + i * 40} l S
-`; }
-  const objs = [
-    '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> >>',
-    `<< /Length ${c.length} >>
-stream
-${c}endstream`,
-  ];
-  let out = '%PDF-1.4
-'; const offs = [];
-  objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj
-${o}
-endobj
-`; });
-  const x = out.length;
-  out += `xref
-0 ${objs.length + 1}
-0000000000 65535 f 
-` + offs.map((o) => String(o).padStart(10, '0') + ' 00000 n 
-').join('') + `trailer
-<< /Size ${objs.length + 1} /Root 1 0 R >>
-startxref
-${x}
-%%EOF
-`;
-  return Buffer.from(out, 'latin1');
-}
-
-/** Zeichnet entlang einer lng/lat-Linie mit Rauschen (px). */
-async function drawAlong(page, rect, ll, noisePx) {
-  const pts = await page.evaluate(([ll]) => {
-    const m = window.__sz.map; const a = m.project(ll[0]), b = m.project(ll[1]);
-    const n = Math.max(2, Math.round(Math.hypot(b.x - a.x, b.y - a.y) / 6));
-    return Array.from({ length: n + 1 }, (_, i) => [a.x + ((b.x - a.x) * i) / n, a.y + ((b.y - a.y) * i) / n]);
-  }, [ll]);
-  let seed = 11; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 0xffffffff - 0.5; };
-  await page.mouse.move(rect[0] + pts[0][0], rect[1] + pts[0][1] + rnd() * noisePx);
-  await page.mouse.down();
-  for (const [x, y] of pts) await page.mouse.move(rect[0] + x, rect[1] + y + rnd() * noisePx * 2);
-  await page.mouse.up();
-  await page.waitForTimeout(400);
-}
 
 const results = [];
 const check = (name, ok, extra = '') => { results.push({ name, ok }); console.log(`${ok ? 'OK  ' : 'FAIL'} ${name} ${extra}`); };
@@ -183,6 +131,7 @@ try {
   await page.waitForFunction(() => !document.getElementById('netsrc-import').disabled, null, { timeout: 30000 });
   const impInfo = await page.evaluate(() => window.__sz.netInfo.import);
   check('GeoJSON-Import erzeugt Netz', /Segmente/.test(impInfo), impInfo);
+  await page.click('#t-pen');
   await drawAlong(page, rect, [[13.4 - 0.005, 52.52 + 0.0015], [13.4 + 0.005, 52.52 + 0.0015]], 7);
   const g1 = await page.evaluate(() => window.__sz.strokes.length);
   const gridOk = await page.evaluate(() => {
@@ -230,7 +179,7 @@ try {
 
   check('Keine Konsolenfehler', errors.filter((e) => !/glyph|sprite|Failed to load resource|protomaps\.github\.io/i.test(e)).length === 0, errors.slice(0, 3).join(' | '));
 } catch (e) {
-  check('Ablauf', false, String(e));
+  check('Ablauf', false, String(e) + ' | ' + errors.slice(-3).join(' ; ') + ' | ' + (await page.evaluate(() => document.getElementById('import-msg').textContent).catch(() => '')));
 }
 await browser.close();
 if (server.close) await server.close(); else await new Promise((r) => server.httpServer.close(r));

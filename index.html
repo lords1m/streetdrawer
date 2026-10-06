@@ -77,7 +77,7 @@
 
       <section>
         <h2>Export</h2>
-        <label class="row">Breite <input type="number" id="ex-width" value="2000" min="200" max="8000" step="100" /> px</label>
+        <label class="row">Breite <input type="number" id="ex-width" value="2000" min="200" max="8000" step="any" /> px</label>
         <label class="row">Hintergrund
           <select id="ex-bg">
             <option value="transparent">Transparent</option>
@@ -129,9 +129,9 @@
       </div>
       <div class="pdfopts">
         <label class="row">Seite <input type="number" id="pdf-page" value="1" min="1" /></label>
-        <label class="row">Maßstab 1 : <input type="number" id="pdf-scale" value="5000" min="1" step="100" /></label>
+        <label class="row">Maßstab 1 : <input type="number" id="pdf-scale" value="5000" min="1" step="any" /></label>
         <span id="pdf-scale-hint" class="hint"></span>
-        <label class="row">Lücken überbrücken bis <input type="number" id="pdf-gap" value="1" min="0" max="20" step="0.5" /> pt</label>
+        <label class="row">Lücken überbrücken bis <input type="number" id="pdf-gap" value="1" min="0" max="20" step="any" /> pt</label>
         <label class="check"><input type="checkbox" id="pdf-widthcls" /> Klassen aus Strichstärke ableiten</label>
       </div>
       <p class="hint">Die Seitenmitte der gewählten Daten wird auf die aktuelle Kartenmitte gelegt. Zuerst die Karte an die passende Stelle schieben.</p>

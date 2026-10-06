@@ -45,10 +45,20 @@ class ScanSink implements PathSink {
     let s = this.stats.get(key);
     if (!s) { s = { paths: 0, vertices: 0 }; this.stats.set(key, s); }
     s.paths++; s.vertices += nPts;
+    // Segmente entlang ihrer Länge in Rasterzellen eintragen (nicht nur Stützpunkte)
     for (let i = 0; i < nPts; i++) {
-      const cx = Math.floor((pts[2 * i] - this.x0) * this.sx), cy = Math.floor((pts[2 * i + 1] - this.y0) * this.sy);
-      if (cx >= 0 && cx < this.nx && cy >= 0 && cy < this.ny) this.cells[cy * this.nx + cx]++;
+      const x = pts[2 * i], y = pts[2 * i + 1];
+      this.hit(x, y);
+      if (i > 0) {
+        const ax = pts[2 * i - 2], ay = pts[2 * i - 1];
+        const steps = Math.min(64, Math.ceil(Math.max(Math.abs(x - ax) * this.sx, Math.abs(y - ay) * this.sy)));
+        for (let k = 1; k < steps; k++) this.hit(ax + ((x - ax) * k) / steps, ay + ((y - ay) * k) / steps);
+      }
     }
+  }
+  private hit(x: number, y: number) {
+    const cx = Math.floor((x - this.x0) * this.sx), cy = Math.floor((y - this.y0) * this.sy);
+    if (cx >= 0 && cx < this.nx && cy >= 0 && cy < this.ny) this.cells[cy * this.nx + cx]++;
   }
 }
 
