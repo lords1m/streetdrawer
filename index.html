@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Straßenzeichner</title>
+  <meta name="description" content="Straßenverläufe einer Karte mit dem Stift nachzeichnen – der Strich rastet nur auf Straßen ein." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e8590c'/%3E%3Cpath d='M6 24 L13 11 L19 19 L26 7' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <div id="app">
+    <div id="map"></div>
+    <canvas id="raw"></canvas>
+
+    <header id="bar">
+      <h1>Straßenzeichner</h1>
+      <div class="tools" role="toolbar" aria-label="Werkzeuge">
+        <button id="t-pen" class="tool active" title="Stift (rastet auf Straßen ein)">✏️ <span>Stift</span></button>
+        <button id="t-eraser" class="tool" title="Radierer">🧽 <span>Radierer</span></button>
+        <button id="t-pan" class="tool" title="Karte bewegen (Leertaste halten)">✋ <span>Bewegen</span></button>
+        <span class="sep"></span>
+        <button id="undo" title="Rückgängig (Strg+Z)">↶</button>
+        <button id="redo" title="Wiederholen (Strg+Y)">↷</button>
+      </div>
+      <div class="right">
+        <button id="theme" title="Hell/Dunkel">◐</button>
+        <button id="panel-toggle" title="Einstellungen">☰</button>
+      </div>
+    </header>
+
+    <aside id="panel" aria-label="Einstellungen">
+      <section>
+        <h2>Stift</h2>
+        <div id="swatches" class="swatches"></div>
+        <label class="row">Farbe <input type="color" id="color" value="#e8590c" /></label>
+        <label class="row">Strichstärke <output id="o-width">6</output> px<input type="range" id="width" min="1" max="40" value="6" /></label>
+        <label class="row">Fangradius <output id="o-snap">28</output> px<input type="range" id="snap" min="4" max="120" value="28" /></label>
+        <label class="row">Radierer <output id="o-eraser">24</output> px<input type="range" id="eraser" min="6" max="120" value="24" /></label>
+        <fieldset class="classes">
+          <legend>Einrasten auf</legend>
+          <label><input type="checkbox" id="c-main" checked /> Hauptstraßen</label>
+          <label><input type="checkbox" id="c-street" checked /> Straßen</label>
+          <label><input type="checkbox" id="c-path" checked /> Pfade</label>
+        </fieldset>
+        <button id="clear" class="danger">Alle Striche löschen</button>
+      </section>
+
+      <section>
+        <h2>Straßennetz</h2>
+        <div class="seg" role="radiogroup" aria-label="Netzquelle">
+          <label><input type="radio" name="netsrc" value="tiles" checked /> Karte</label>
+          <label><input type="radio" name="netsrc" value="import" disabled id="netsrc-import" /> Import</label>
+        </div>
+        <label class="check"><input type="checkbox" id="shownet" /> Netz einblenden</label>
+        <label class="check"><input type="checkbox" id="overpass" /> Overpass ergänzen (ab Zoom 17)</label>
+        <p id="netinfo" class="hint">Netz wird aufgebaut …</p>
+      </section>
+
+      <section>
+        <h2>Import</h2>
+        <input type="file" id="file" accept=".geojson,.json,.pmtiles,.pbf,.fgb,.pdf,.mvt" hidden />
+        <button id="import-btn">Datei importieren …</button>
+        <button id="import-clear" hidden>Import entfernen</button>
+        <p class="hint">GeoJSON, Overpass-JSON, PMTiles, OSM-PBF, FlatGeobuf, PDF (Vektorgrafik)</p>
+        <progress id="progress" max="100" value="0" hidden></progress>
+        <div id="import-msg" class="hint"></div>
+      </section>
+
+      <section>
+        <h2>Karte</h2>
+        <label class="row col">PMTiles-URL (Protomaps-Schema)
+          <span class="inline"><input type="url" id="pm-url" placeholder="https://…/stadt.pmtiles" /><button id="pm-load">Laden</button></span>
+        </label>
+        <label class="check"><input type="checkbox" id="labels" checked /> Beschriftung (lädt Schriften von protomaps.github.io)</label>
+      </section>
+
+      <section>
+        <h2>Export</h2>
+        <label class="row">Breite <input type="number" id="ex-width" value="2000" min="200" max="8000" step="100" /> px</label>
+        <label class="row">Hintergrund
+          <select id="ex-bg">
+            <option value="transparent">Transparent</option>
+            <option value="#ffffff">Weiß</option>
+            <option value="#111418">Dunkel</option>
+          </select>
+        </label>
+        <div class="two"><button id="ex-png" class="primary">PNG</button><button id="ex-svg" class="primary">SVG</button></div>
+      </section>
+    </aside>
+
+    <footer id="status" role="status"></footer>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
