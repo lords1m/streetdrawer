@@ -506,6 +506,7 @@ async function doExport(kind: 'png' | 'svg') {
 initImport({
   map, net, state, setStatus,
   showNetOverlay: () => void showNetOverlay(),
+  setExtraLines,
   setImportAvailable(has: boolean, info: string) {
     ($('netsrc-import') as HTMLInputElement).disabled = !has;
     $('import-clear').hidden = !has;

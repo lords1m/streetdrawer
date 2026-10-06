@@ -64,3 +64,9 @@ progress { width: 100%; accent-color: var(--accent); }
   #panel { top: auto; left: 8px; right: 8px; width: auto; height: 46vh; bottom: 44px; }
   #panel.closed { transform: translateY(calc(100% + 60px)); }
 }
+
+dialog { color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; max-width: min(560px, calc(100vw - 24px)); box-shadow: var(--shadow); }
+dialog::backdrop { background: #0006; }
+dialog h3 { margin: 0 0 6px; }
+dialog form { display: flex; flex-direction: column; gap: 10px; }
+dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 6px 0 0; padding: 0; }

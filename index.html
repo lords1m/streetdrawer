@@ -90,6 +90,24 @@
 
     <footer id="status" role="status"></footer>
   </div>
+
+  <dialog id="import-dialog">
+    <form method="dialog">
+      <h3 id="imp-title">Import</h3>
+      <p id="imp-info" class="hint"></p>
+      <fieldset class="classes">
+        <legend>Bereich</legend>
+        <label><input type="radio" name="imp-area" value="all" checked /> Ganze Datei</label>
+        <label><input type="radio" name="imp-area" value="view" /> Nur aktueller Kartenausschnitt (empfohlen bei großen Dateien)</label>
+      </fieldset>
+      <label class="row" id="imp-zoom-row">PMTiles-Zoom <input type="number" id="imp-zoom" value="14" min="0" max="16" /></label>
+      <label class="check" id="imp-rings-row"><input type="checkbox" id="imp-rings" /> Polygonränder als Linien übernehmen</label>
+      <menu>
+        <button value="cancel">Abbrechen</button>
+        <button id="imp-go" value="ok" class="primary">Importieren</button>
+      </menu>
+    </form>
+  </dialog>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
