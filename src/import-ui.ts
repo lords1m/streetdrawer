@@ -1,7 +1,9 @@
 import type * as maplibregl from 'maplibre-gl';
+import { LocalProjection } from './core/geo';
 import type { LineBatch } from './core/types';
 import { detectFormat, FORMAT_LABEL, type ImportFormat, type ImportOptions } from './import';
 import type { ImportOut } from './workers/import.worker';
+import type { BuildOptions } from './core/graph';
 import type { NetClient } from './net-client';
 import { OverpassClient, tilesFor, tilesToBatch } from './overpass';
 import { openPdfImport } from './pdf-ui';
@@ -9,7 +11,7 @@ import { openPdfImport } from './pdf-ui';
 export interface ImportCtx {
   map: maplibregl.Map;
   net: NetClient;
-  state: { overpass: boolean; [k: string]: unknown };
+  state: { overpass: boolean; thin?: boolean; [k: string]: unknown };
   setStatus: (s: string) => void;
   showNetOverlay: () => void;
   setImportAvailable: (has: boolean, info: string) => void;
@@ -19,11 +21,15 @@ export interface ImportCtx {
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 export function batchBounds(b: LineBatch): [number, number, number, number] | null {
-  if (b.kind !== 'lnglat' || !b.coords.length) return null;
+  if (!b.coords.length) return null;
   let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
   for (let i = 0; i < b.coords.length; i += 2) {
     const x = b.coords[i], y = b.coords[i + 1];
     if (x < w) w = x; if (x > e) e = x; if (y < s) s = y; if (y > n) n = y;
+  }
+  if (b.kind === 'meters') {
+    const p = new LocalProjection(b.origin?.[0] ?? 0, b.origin?.[1] ?? 0);
+    return [p.lng(w), p.lat(s), p.lng(e), p.lat(n)];
   }
   return [w, s, e, n];
 }
@@ -49,6 +55,7 @@ export function initImport(ctx: ImportCtx) {
     if (f) void startImport(f);
   });
 
+  $('thin').addEventListener('change', (e) => { ctx.state.thin = (e.target as HTMLInputElement).checked; });
   $('import-clear').addEventListener('click', async () => {
     await net.clear('import');
     ctx.setImportAvailable(false, '');
@@ -57,7 +64,7 @@ export function initImport(ctx: ImportCtx) {
   });
 
   /** Eine fertige Linien-Menge als Import-Netz übernehmen. */
-  async function adoptBatch(batch: LineBatch, label: string, build = { snap: 0.5, planarize: true, tee: 1.0, gap: 0 }) {
+  async function adoptBatch(batch: LineBatch, label: string, build: BuildOptions = { snap: 0.5, planarize: true, tee: 1.0, gap: 0 }) {
     const bounds = batchBounds(batch);
     const st = await net.setNetwork('import', batch, build);
     ctx.setImportAvailable(true, `${label}: ${st.edges.toLocaleString('de')} Segmente · ${st.nodes.toLocaleString('de')} Knoten · ${st.ms.toFixed(0)} ms`);
@@ -74,7 +81,7 @@ export function initImport(ctx: ImportCtx) {
     msg.textContent = '';
     const fmt = await detectFormat(file);
     if (!fmt) { msg.textContent = 'Dateityp nicht erkannt.'; return; }
-    if (fmt === 'pdf') { await openPdfImport({ ...ctx, adoptBatch, progress, msg }, file); return; }
+    if (fmt === 'pdf') { await openPdfImport({ ...ctx, state: ctx.state, adoptBatch, progress, msg }, file); return; }
     const opts = await askOptions(file, fmt);
     if (!opts) return;
     progress.hidden = false; progress.removeAttribute('value');

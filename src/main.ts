@@ -29,6 +29,7 @@ export const state = {
   showNet: false,
   pmtilesUrl: new URL('berlin.pmtiles', location.href).toString(),
   overpass: false,
+  thin: true,
 };
 
 let strokes: Stroke[] = [];
@@ -259,7 +260,13 @@ function applyInteraction() {
   cont.classList.toggle('draw-eraser', !panning && state.tool === 'eraser');
 }
 
-const activeMask = () => (state.classes.main ? 1 << CLASS_MAIN : 0) | (state.classes.street ? 1 << CLASS_STREET : 0) | (state.classes.path ? 1 << CLASS_PATH : 0);
+/** Klassenmaske aus Auswahl; für Import-Netze mit Hierarchie zusätzlich nach Zoom ausgedünnt (PDF: aus). */
+const activeMask = () => {
+  const user = (state.classes.main ? 1 << CLASS_MAIN : 0) | (state.classes.street ? 1 << CLASS_STREET : 0) | (state.classes.path ? 1 << CLASS_PATH : 0);
+  if (state.netSlot !== 'import' || !state.thin) return user;
+  const z = map.getZoom();
+  return user & (z < 12.5 ? 1 : z < 14.5 ? 3 : 7);
+};
 
 function relPos(e: PointerEvent) {
   const r = cont.getBoundingClientRect();

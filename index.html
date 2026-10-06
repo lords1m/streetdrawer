@@ -52,6 +52,7 @@
           <label><input type="radio" name="netsrc" value="import" disabled id="netsrc-import" /> Import</label>
         </div>
         <label class="check"><input type="checkbox" id="shownet" /> Netz einblenden</label>
+        <label class="check"><input type="checkbox" id="thin" checked /> Ausdünnung nach Zoom (Import)</label>
         <label class="check"><input type="checkbox" id="overpass" /> Overpass ergänzen (ab Zoom 17)</label>
         <p id="netinfo" class="hint">Netz wird aufgebaut …</p>
       </section>
@@ -105,6 +106,38 @@
       <menu>
         <button value="cancel">Abbrechen</button>
         <button id="imp-go" value="ok" class="primary">Importieren</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="pdf-dialog" class="wide">
+    <form method="dialog">
+      <h3 id="pdf-title">PDF importieren</h3>
+      <p id="pdf-info" class="hint"></p>
+      <progress id="pdf-progress" max="100" value="0"></progress>
+      <div class="pdfgrid">
+        <div>
+          <canvas id="pdf-canvas" aria-label="Dichteübersicht der Seite; Ziehen wählt den Ausschnitt"></canvas>
+          <div class="hint">Ausschnitt durch Ziehen wählen (sonst ganze Seite). <button type="button" id="pdf-reset-sel">Auswahl zurücksetzen</button></div>
+        </div>
+        <div class="tablewrap">
+          <table class="styles">
+            <thead><tr><th></th><th>Farbe</th><th>Stärke</th><th>Ebene</th><th class="num">Anzahl</th></tr></thead>
+            <tbody id="pdf-styles"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="pdfopts">
+        <label class="row">Seite <input type="number" id="pdf-page" value="1" min="1" /></label>
+        <label class="row">Maßstab 1 : <input type="number" id="pdf-scale" value="5000" min="1" step="100" /></label>
+        <span id="pdf-scale-hint" class="hint"></span>
+        <label class="row">Lücken überbrücken bis <input type="number" id="pdf-gap" value="1" min="0" max="20" step="0.5" /> pt</label>
+        <label class="check"><input type="checkbox" id="pdf-widthcls" /> Klassen aus Strichstärke ableiten</label>
+      </div>
+      <p class="hint">Die Seitenmitte der gewählten Daten wird auf die aktuelle Kartenmitte gelegt. Zuerst die Karte an die passende Stelle schieben.</p>
+      <menu>
+        <button value="cancel">Abbrechen</button>
+        <button id="pdf-go" value="ok" class="primary" disabled>Importieren</button>
       </menu>
     </form>
   </dialog>

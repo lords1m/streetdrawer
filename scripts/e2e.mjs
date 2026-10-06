@@ -1,5 +1,5 @@
 // Headless-Prüfung der Hauptpfade (Playwright). Start: npm run e2e
-import { createServer } from 'vite';
+import { createServer, preview } from 'vite';
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,9 +7,67 @@ import os from 'node:os';
 
 const out = process.env.E2E_OUT || path.join(os.tmpdir(), 'sz-e2e');
 fs.mkdirSync(out, { recursive: true });
-const server = await createServer({ server: { port: 5199, strictPort: false }, logLevel: 'warn' });
-await server.listen();
-const base = server.resolvedUrls.local[0];
+// E2E_PROD=1: gebautes Bundle (dist/) prüfen statt Dev-Server
+const server = process.env.E2E_PROD
+  ? await preview({ preview: { port: 5198, strictPort: false }, logLevel: 'warn' })
+  : await createServer({ server: { port: 5199, strictPort: false }, logLevel: 'warn' });
+if (!process.env.E2E_PROD) await server.listen();
+const base = (server.resolvedUrls ?? { local: ['http://localhost:5198/'] }).local[0];
+
+
+function makePdf() {
+  // 11x11-Gitter, Linien alle 40 pt (zwei Strichstärken), Hintergrundfläche
+  let c = '0.95 g 0 0 612 792 re f
+0.2 0.2 0.2 RG 1 w
+';
+  for (let i = 0; i <= 10; i++) { c += `${100 + i * 40} 100 m ${100 + i * 40} 500 l S
+`; }
+  c += '0.5 w 0.6 0.1 0.1 RG
+';
+  for (let i = 0; i <= 10; i++) { c += `100 ${100 + i * 40} m 500 ${100 + i * 40} l S
+`; }
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> >>',
+    `<< /Length ${c.length} >>
+stream
+${c}endstream`,
+  ];
+  let out = '%PDF-1.4
+'; const offs = [];
+  objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj
+${o}
+endobj
+`; });
+  const x = out.length;
+  out += `xref
+0 ${objs.length + 1}
+0000000000 65535 f 
+` + offs.map((o) => String(o).padStart(10, '0') + ' 00000 n 
+').join('') + `trailer
+<< /Size ${objs.length + 1} /Root 1 0 R >>
+startxref
+${x}
+%%EOF
+`;
+  return Buffer.from(out, 'latin1');
+}
+
+/** Zeichnet entlang einer lng/lat-Linie mit Rauschen (px). */
+async function drawAlong(page, rect, ll, noisePx) {
+  const pts = await page.evaluate(([ll]) => {
+    const m = window.__sz.map; const a = m.project(ll[0]), b = m.project(ll[1]);
+    const n = Math.max(2, Math.round(Math.hypot(b.x - a.x, b.y - a.y) / 6));
+    return Array.from({ length: n + 1 }, (_, i) => [a.x + ((b.x - a.x) * i) / n, a.y + ((b.y - a.y) * i) / n]);
+  }, [ll]);
+  let seed = 11; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 0xffffffff - 0.5; };
+  await page.mouse.move(rect[0] + pts[0][0], rect[1] + pts[0][1] + rnd() * noisePx);
+  await page.mouse.down();
+  for (const [x, y] of pts) await page.mouse.move(rect[0] + x, rect[1] + y + rnd() * noisePx * 2);
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+}
 
 const results = [];
 const check = (name, ok, extra = '') => { results.push({ name, ok }); console.log(`${ok ? 'OK  ' : 'FAIL'} ${name} ${extra}`); };
@@ -110,6 +168,55 @@ try {
   const parts = await page.evaluate(() => window.__sz.strokes.reduce((a, s) => a + s.parts.length, 0));
   check('Radierer teilt den Strich', parts >= 2, `Teile: ${parts}`);
 
+
+  // ---------------- Import: GeoJSON-Gitter
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(() => { window.__sz.map.jumpTo({ center: [13.4, 52.52], zoom: 15 }); });
+  const feats = [];
+  for (let i = -5; i <= 5; i++) {
+    feats.push({ type: 'Feature', properties: { highway: 'residential' }, geometry: { type: 'LineString', coordinates: [[13.4 + i * 0.0025, 52.52 - 0.0125], [13.4 + i * 0.0025, 52.52 + 0.0125]] } });
+    feats.push({ type: 'Feature', properties: { highway: 'residential' }, geometry: { type: 'LineString', coordinates: [[13.4 - 0.0125, 52.52 + i * 0.0015], [13.4 + 0.0125, 52.52 + i * 0.0015]] } });
+  }
+  await page.setInputFiles('#file', { name: 'raster.geojson', mimeType: 'application/geo+json', buffer: Buffer.from(JSON.stringify({ type: 'FeatureCollection', features: feats })) });
+  await page.waitForSelector('#import-dialog[open]');
+  await page.click('#imp-go');
+  await page.waitForFunction(() => !document.getElementById('netsrc-import').disabled, null, { timeout: 30000 });
+  const impInfo = await page.evaluate(() => window.__sz.netInfo.import);
+  check('GeoJSON-Import erzeugt Netz', /Segmente/.test(impInfo), impInfo);
+  await drawAlong(page, rect, [[13.4 - 0.005, 52.52 + 0.0015], [13.4 + 0.005, 52.52 + 0.0015]], 7);
+  const g1 = await page.evaluate(() => window.__sz.strokes.length);
+  const gridOk = await page.evaluate(() => {
+    const s = window.__sz.strokes[window.__sz.strokes.length - 1];
+    return s.parts.every((p) => { for (let i = 1; i < p.length; i += 2) if (Math.abs((p[i] - 52.52) / 0.0015 - Math.round((p[i] - 52.52) / 0.0015)) > 1e-3 && Math.abs((p[i - 1] - 13.4) / 0.0025 - Math.round((p[i - 1] - 13.4) / 0.0025)) > 1e-3) return false; return true; });
+  });
+  check('Strich rastet im importierten Netz ein', g1 === 2 && gridOk, `Striche ${g1}`);
+  await page.click('#import-clear');
+  await page.waitForFunction(() => document.getElementById('netsrc-import').disabled);
+
+  // ---------------- Import: PDF (Vektorgrafik) mit Maßstab aus dem Dateinamen
+  await page.evaluate(() => { window.__sz.map.jumpTo({ center: [13.4, 52.52], zoom: 15 }); });
+  const pdfBuf = makePdf();
+  await page.setInputFiles('#file', { name: 'stadtplan_1_5000.pdf', mimeType: 'application/pdf', buffer: pdfBuf });
+  await page.waitForSelector('#pdf-dialog[open]');
+  await page.waitForFunction(() => !document.getElementById('pdf-go').disabled, null, { timeout: 30000 });
+  const rows = await page.evaluate(() => document.querySelectorAll('#pdf-styles tr').length);
+  const scaleVal = await page.inputValue('#pdf-scale');
+  check('PDF: Ebenenstatistik und Maßstab erkannt', rows >= 2 && scaleVal === '5000', `${rows} Ebenen, 1:${scaleVal}`);
+  await page.screenshot({ path: path.join(out, 'pdf-dialog.png') });
+  await page.click('#pdf-go');
+  await page.waitForFunction(() => !document.getElementById('netsrc-import').disabled, null, { timeout: 30000 });
+  const pdfInfo = await page.evaluate(() => window.__sz.netInfo.import);
+  check('PDF-Import erzeugt Netz', /PDF/.test(pdfInfo), pdfInfo);
+  await page.waitForTimeout(800);
+  // PDF-Gitter: Linien alle 40 pt bei 1:5000 (= 70,6 m); Strich entlang einer horizontalen Linie
+  const pdfStroke = await page.evaluate(async () => {
+    const m = window.__sz.map; const c = m.getCenter();
+    return { c: [c.lng, c.lat] };
+  });
+  await drawAlong(page, rect, [[pdfStroke.c[0] - 0.0004, pdfStroke.c[1]], [pdfStroke.c[0] + 0.0004, pdfStroke.c[1]]], 5);
+  check('Strich rastet im PDF-Netz ein', (await page.evaluate(() => window.__sz.strokes.length)) === 3);
+  await page.screenshot({ path: path.join(out, 'pdf-net.png') });
+
   // Dunkelmodus
   await page.click('#theme');
   await page.waitForTimeout(1500);
@@ -126,7 +233,7 @@ try {
   check('Ablauf', false, String(e));
 }
 await browser.close();
-await server.close();
+if (server.close) await server.close(); else await new Promise((r) => server.httpServer.close(r));
 fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify(results, null, 2));
 console.log(`Ausgabe: ${out}`);
 process.exit(results.every((r) => r.ok) ? 0 : 1);
