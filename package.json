@@ -1,0 +1,33 @@
+{
+  "name": "strassenzeichner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "tiles:berlin": "node scripts/extract-berlin.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "bench:pdf": "node --experimental-strip-types scripts/bench-pdf.mjs"
+  },
+  "dependencies": {
+    "@deck.gl/core": "^9.4.0",
+    "@deck.gl/layers": "^9.4.0",
+    "@deck.gl/mapbox": "^9.4.0",
+    "@mapbox/vector-tile": "^3.0.0",
+    "@protomaps/basemaps": "^5.7.2",
+    "flatgeobuf": "^4.5.0",
+    "maplibre-gl": "^6.12.0",
+    "pbf": "^5.1.2",
+    "pmtiles": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "playwright": "^1.63.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.3",
+    "vitest": "^5.0.3"
+  }
+}
