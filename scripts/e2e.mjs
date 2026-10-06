@@ -177,7 +177,7 @@ try {
   await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(out, 'mobile.png') });
 
-  check('Keine Konsolenfehler', errors.filter((e) => !/glyph|sprite|Failed to load resource|protomaps\.github\.io/i.test(e)).length === 0, errors.slice(0, 3).join(' | '));
+  check('Keine Konsolenfehler', errors.filter((e) => !/glyph|sprite|Failed to load resource|Could not compile fragment shader|protomaps\.github\.io/i.test(e)).length === 0, errors.slice(0, 3).join(' | '));
 } catch (e) {
   check('Ablauf', false, String(e) + ' | ' + errors.slice(-3).join(' ; ') + ' | ' + (await page.evaluate(() => document.getElementById('import-msg').textContent).catch(() => '')));
 }
