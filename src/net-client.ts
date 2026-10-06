@@ -3,13 +3,20 @@ import type { LineBatch, NetStats, Slot, WorkerIn, WorkerOut } from './core/type
 
 type Distribute<T> = T extends unknown ? Omit<T, 'rid'> : never;
 
-/** Promise-Fassade für den Netz-Worker. */
+/**
+ * Promise-Fassade für den Netz-Worker. Stürzt der Worker ab (z. B. Speicher), werden alle offenen
+ * Anfragen abgewiesen, ein neuer Worker gestartet und `onRestart` gerufen, damit Netze neu aufgebaut werden.
+ */
 export class NetClient {
-  private w = new Worker(new URL('./workers/net.worker.ts', import.meta.url), { type: 'module' });
+  private w!: Worker;
   private rid = 0;
   private pending = new Map<number, { resolve: (m: WorkerOut) => void; reject: (e: Error) => void }>();
+  onRestart: ((reason: string) => void) | null = null;
 
-  constructor() {
+  constructor() { this.start(); }
+
+  private start() {
+    this.w = new Worker(new URL('./workers/net.worker.ts', import.meta.url), { type: 'module' });
     this.w.onmessage = (ev: MessageEvent<WorkerOut>) => {
       const p = this.pending.get(ev.data.rid);
       if (!p) return;
@@ -17,6 +24,16 @@ export class NetClient {
       if (ev.data.op === 'error') p.reject(new Error(ev.data.message));
       else p.resolve(ev.data);
     };
+    const crash = (reason: string) => {
+      const err = new Error('Netz-Worker abgestürzt: ' + reason);
+      for (const p of this.pending.values()) p.reject(err);
+      this.pending.clear();
+      this.w.terminate();
+      this.start();
+      this.onRestart?.(reason);
+    };
+    this.w.onerror = (e) => { e.preventDefault(); crash(e.message || 'unbekannter Fehler'); };
+    this.w.onmessageerror = () => crash('Nachricht nicht lesbar');
   }
 
   private call(msg: Distribute<WorkerIn>, transfer: Transferable[] = []): Promise<WorkerOut> {
@@ -28,7 +45,9 @@ export class NetClient {
   }
 
   async setNetwork(slot: Slot, lines: LineBatch, build: BuildOptions): Promise<NetStats> {
-    const r = await this.call({ op: 'setNetwork', slot, lines, build }, [lines.coords.buffer, lines.offsets.buffer, lines.cls.buffer]);
+    const transfer: Transferable[] = [lines.coords.buffer, lines.offsets.buffer, lines.cls.buffer];
+    if (lines.level) transfer.push(lines.level.buffer);
+    const r = await this.call({ op: 'setNetwork', slot, lines, build }, transfer);
     if (r.op !== 'ready') throw new Error('unerwartete Antwort');
     return r.stats;
   }

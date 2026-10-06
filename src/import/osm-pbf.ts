@@ -114,14 +114,18 @@ function decodeBlock(data: Uint8Array, nodes: Map<number, number>, coords: numbe
         if (hw === undefined) return;
         const cls = classifyHighway(hw);
         if (cls === null) return;
-        const line: number[][] = [];
-        let id = 0;
+        // Weg an fehlenden Knoten (außerhalb des Ausschnitts) teilen – sonst entstünden Sehnen über die Lücke
+        let line: number[][] = [];
+        let id = 0, any = false;
+        const flushLine = () => { if (line.length >= 2) { sink.addLine(line, cls); any = true; } line = []; };
         for (const d of refs) {
           id += d;
           const idx = nodes.get(id);
           if (idx !== undefined) line.push([coords[2 * idx], coords[2 * idx + 1]]);
+          else flushLine();
         }
-        if (line.length >= 2) { sink.addLine(line, cls); ways++; }
+        flushLine();
+        if (any) ways++;
       } else p.skip(p.type);
     }, null, end);
   }

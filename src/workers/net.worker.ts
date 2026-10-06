@@ -12,13 +12,13 @@ const sessions = new Map<number, { session: MatchSession; slot: Slot; proj: Loca
 const post = (m: WorkerOut, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
 
 function toMeters(lines: LineBatch): { xy: Float64Array; proj: LocalProjection } {
+  if (lines.kind === 'meters') {
+    // Puffer gehört nach dem Transfer dem Worker: direkt verwenden, nicht kopieren
+    const o = lines.origin ?? [0, 0];
+    return { xy: lines.coords, proj: new LocalProjection(o[0], o[1]) };
+  }
   const n = lines.coords.length / 2;
   const xy = new Float64Array(lines.coords.length);
-  if (lines.kind === 'meters') {
-    const o = lines.origin ?? [0, 0];
-    xy.set(lines.coords);
-    return { xy, proj: new LocalProjection(o[0], o[1]) };
-  }
   // Ursprung = Mittelpunkt der Daten
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (let i = 0; i < n; i++) {
@@ -38,7 +38,7 @@ self.onmessage = (ev: MessageEvent<WorkerIn>) => {
       case 'setNetwork': {
         const t0 = performance.now();
         const { xy, proj } = toMeters(m.lines);
-        const graph = buildGraph({ coords: xy, offsets: m.lines.offsets, cls: m.lines.cls }, proj, m.build);
+        const graph = buildGraph({ coords: xy, offsets: m.lines.offsets, cls: m.lines.cls, level: m.lines.level }, proj, m.build);
         nets[m.slot] = { graph, router: new Router(graph) };
         for (const [sid, s] of sessions) if (s.slot === m.slot) sessions.delete(sid);
         post({ op: 'ready', rid: m.rid, slot: m.slot, stats: { nodes: graph.nodeCount, edges: graph.edgeCount, ms: performance.now() - t0 } });

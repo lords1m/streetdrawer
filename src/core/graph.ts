@@ -10,6 +10,8 @@ export interface PolylineSet {
   coords: Float64Array;   // x0,y0,x1,y1,…
   offsets: Uint32Array;   // Punktindex je Polylinie, Länge n+1
   cls: Uint8Array;
+  /** Optional: Ebene je Polylinie (Brücke 1, Boden 0, Tunnel -1). Kreuzungen nur bei gleicher Ebene. */
+  level?: Int8Array;
 }
 
 export interface BuildOptions {
@@ -75,7 +77,7 @@ export function buildGraph(src: PolylineSet, proj: LocalProjection, o: BuildOpti
   const nodes = new NodeStore(snap);
 
   // 1. Segmente mit Knoten-Snapping, Duplikate entfernen
-  const sa = new GrowU32(), sb = new GrowU32(), sc = new GrowU32();
+  const sa = new GrowU32(), sb = new GrowU32(), sc = new GrowU32(), sl = new GrowU32();
   const dup = new IntPairMap();
   const nPoly = src.offsets.length - 1;
   for (let p = 0; p < nPoly; p++) {
@@ -86,7 +88,7 @@ export function buildGraph(src: PolylineSet, proj: LocalProjection, o: BuildOpti
         const lo = Math.min(prev, id), hi = Math.max(prev, id);
         const ex = dup.get(lo, hi);
         if (ex >= 0) { if (src.cls[p] < sc.a[ex]) sc.a[ex] = src.cls[p]; }
-        else { dup.set(lo, hi, sa.n); sa.push(lo); sb.push(hi); sc.push(src.cls[p]); }
+        else { dup.set(lo, hi, sa.n); sa.push(lo); sb.push(hi); sc.push(src.cls[p]); sl.push((src.level?.[p] ?? 0) + 128); }
       }
       prev = id;
     }
@@ -120,6 +122,7 @@ export function buildGraph(src: PolylineSet, proj: LocalProjection, o: BuildOpti
           const ei = margin / len[i], ej = margin / len[j];
           const iIn = t > ei && t < 1 - ei, jIn = u > ej && u < 1 - ej;
           if (iIn && jIn) {
+            if (sl.a[i] !== sl.a[j]) return; // Brücke über/Tunnel unter Straße: keine Kreuzung
             const node = nodes.get(ax[i] + (bx[i] - ax[i]) * t, ay[i] + (by[i] - ay[i]) * t);
             addSplit(i, t, node); addSplit(j, u, node);
           } else if (iIn) {

@@ -25,7 +25,8 @@ export const isDelim = (c: number) => DELIM[c] === 1;
 export const isRegular = (c: number) => WS[c] === 0 && DELIM[c] === 0;
 
 export class Lexer {
-  constructor(public buf: Uint8Array, public pos = 0) {}
+  /** complete: der Puffer enthält das Objekt vollständig – ein Token darf am Pufferende enden. */
+  constructor(public buf: Uint8Array, public pos = 0, public complete = false) {}
 
   skipWs() {
     const b = this.buf;
@@ -82,7 +83,7 @@ export class Lexer {
     if (b[p] === 43 || b[p] === 45) p++;
     let isInt = true;
     while (p < b.length && ((b[p] >= 48 && b[p] <= 57) || b[p] === 46)) { if (b[p] === 46) isInt = false; p++; }
-    if (p >= b.length) throw new EofError();
+    if (p >= b.length && !this.complete) throw new EofError();
     const v = Number(latin1(b, start, p)) || 0;
     this.pos = p;
     if (isInt && v >= 0 && b[start] !== 43 && b[start] !== 45) {
@@ -99,7 +100,7 @@ export class Lexer {
           this.pos = r + 1;
           return new Ref(v, gen);
         }
-      } else if (q >= b.length) throw new EofError();
+      } else if (q >= b.length && !this.complete) throw new EofError();
     }
     return v;
   }
@@ -116,7 +117,7 @@ export class Lexer {
       }
       s += String.fromCharCode(c); this.pos++;
     }
-    if (this.pos >= b.length) throw new EofError();
+    if (this.pos >= b.length && !this.complete) throw new EofError();
     return new Name(s);
   }
 

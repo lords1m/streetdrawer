@@ -129,34 +129,37 @@ function collectTileNetwork(): LineBatch | null {
   if (!roadIds.length) return null;
   const feats = map.queryRenderedFeatures(undefined, { layers: roadIds });
   const coords = new GrowF64(1 << 16), offsets = new GrowU32(1 << 12);
-  const cls: number[] = [];
-  const addLine = (line: number[][], c: number) => {
+  const cls: number[] = [], level: number[] = [];
+  const addLine = (line: number[][], c: number, lv = 0) => {
     if (line.length < 2) return;
     offsets.push(coords.n / 2);
     for (const p of line) { coords.push(p[0]); coords.push(p[1]); }
-    cls.push(c);
+    cls.push(c); level.push(lv);
   };
   for (const f of feats) {
     const c = kindToClass(f.properties?.kind);
     if (c === null) continue;
+    const p = f.properties ?? {};
+    const lv = p.is_bridge ? 1 : p.is_tunnel ? -1 : 0;
     const g = f.geometry;
-    if (g.type === 'LineString') addLine(g.coordinates as number[][], c);
-    else if (g.type === 'MultiLineString') for (const l of g.coordinates as number[][][]) addLine(l, c);
+    if (g.type === 'LineString') addLine(g.coordinates as number[][], c, lv);
+    else if (g.type === 'MultiLineString') for (const l of g.coordinates as number[][][]) addLine(l, c, lv);
   }
   if (extraLines && extraLines.kind === 'lnglat') {
     for (let i = 0; i < extraLines.cls.length; i++) {
       offsets.push(coords.n / 2);
       for (let k = extraLines.offsets[i]; k < extraLines.offsets[i + 1]; k++) { coords.push(extraLines.coords[2 * k]); coords.push(extraLines.coords[2 * k + 1]); }
-      cls.push(extraLines.cls[i]);
+      cls.push(extraLines.cls[i]); level.push(extraLines.level?.[i] ?? 0);
     }
   }
   if (!cls.length) return null;
   offsets.push(coords.n / 2);
-  return { coords: coords.toArray(), offsets: offsets.toArray(), cls: Uint8Array.from(cls), kind: 'lnglat' };
+  return { coords: coords.toArray(), offsets: offsets.toArray(), cls: Uint8Array.from(cls), level: Int8Array.from(level), kind: 'lnglat' };
 }
 
 async function refreshNet(force = false) {
-  if (netBusy || drawing || !map.loaded()) { if (!drawing) scheduleNetRefresh(300); return; }
+  if (drawing) { refreshPending = true; return; }   // nach dem Strich nachholen
+  if (netBusy || !map.loaded()) { scheduleNetRefresh(300); return; }
   const c = map.getCenter();
   const key = `${c.lng.toFixed(5)},${c.lat.toFixed(5)},${map.getZoom().toFixed(2)},${map.getCanvas().width},${state.pmtilesUrl},${extraLines?.cls.length ?? 0}`;
   if (!force && key === netKey) return;
@@ -200,17 +203,28 @@ async function showNetOverlay() {
 }
 
 // ---------------------------------------------------------------- Zeichnen
+/** Ein laufender oder gerade abschließender Strich. Alles, was asynchron nachläuft, hängt an diesem Objekt. */
+interface LiveStroke {
+  sid: number;
+  raw: number[];          // lng,lat Roh-Punkte
+  sent: number;           // bereits an den Worker geschickte Einträge von raw
+  color: string;
+  width: number;
+  slot: Slot;
+  radiusM: number;
+  mask: number;
+  queue: Promise<void>;   // serialisiert alle Anfragen dieses Strichs
+  busy: boolean;          // Vorschau-Anfrage unterwegs
+  cancelled: boolean;
+  result: Float64Array[];
+}
 let drawing = false;
-let pointers = new Set<number>();
-let curSid = 0;
-let rawLL: number[] = [];       // lng,lat Roh-Punkt
-let sentUpTo = 0;
-let inFlight = false;
+const pointers = new Set<number>();
+let live: LiveStroke | null = null;
+let rawLL: number[] = [];       // angezeigte Roh-Punkte der aktuellen Geste (Stift oder Radierer)
 let flushQueued = false;
-let chain: Promise<void> = Promise.resolve();
-let curParts: Float64Array[] = [];
+let refreshPending = false;
 let eraseWork: Stroke[] | null = null;
-let lastEraseCount = 0;
 const cont = map.getCanvasContainer();
 const rawCanvas = $('raw') as HTMLCanvasElement;
 const rawCtx = rawCanvas.getContext('2d')!;
@@ -237,8 +251,8 @@ function drawRaw() {
     rawCtx.beginPath(); rawCtx.arc(p.x, p.y, state.eraserPx, 0, Math.PI * 2); rawCtx.stroke();
     return;
   }
-  rawCtx.strokeStyle = state.color; rawCtx.globalAlpha = 0.35;
-  rawCtx.lineWidth = Math.max(1, state.width); rawCtx.lineCap = 'round'; rawCtx.lineJoin = 'round';
+  rawCtx.strokeStyle = live?.color ?? state.color; rawCtx.globalAlpha = 0.35;
+  rawCtx.lineWidth = Math.max(1, live?.width ?? state.width); rawCtx.lineCap = 'round'; rawCtx.lineJoin = 'round';
   rawCtx.beginPath();
   for (let i = 0; i < rawLL.length; i += 2) {
     const p = map.project([rawLL[i], rawLL[i + 1]]);
@@ -270,18 +284,19 @@ const activeMask = () => {
   return user & (z < 12.5 ? 1 : z < 14.5 ? 3 : 7);
 };
 
-function relPos(e: PointerEvent) {
+function relPos(e: PointerEvent): [number, number] {
   const r = cont.getBoundingClientRect();
-  return [e.clientX - r.left, e.clientY - r.top] as const;
+  return [e.clientX - r.left, e.clientY - r.top];
 }
 
-function addRawPoint(e: PointerEvent) {
-  const [x, y] = relPos(e);
-  const ll = map.unproject([x, y]);
-  rawLL.push(ll.lng, ll.lat);
-  if (state.tool === 'eraser' && eraseWork) {
-    eraseWork = eraseStrokes(eraseWork, map, [[x, y]], state.eraserPx);
+/** Hängt die Punkte der Ereignisse an rawLL an und liefert sie in Bildschirmkoordinaten. */
+function addRawPoints(evs: PointerEvent[]): [number, number][] {
+  const px = evs.map(relPos);
+  for (const [x, y] of px) {
+    const ll = map.unproject([x, y]);
+    rawLL.push(ll.lng, ll.lat);
   }
+  return px;
 }
 
 function onDown(e: PointerEvent) {
@@ -292,21 +307,31 @@ function onDown(e: PointerEvent) {
   e.preventDefault();
   try { cont.setPointerCapture(e.pointerId); } catch { /* ignore */ }
   drawing = true;
-  rawLL = []; sentUpTo = 0; curParts = [];
-  curSid = ++nextStrokeId;
-  if (state.tool === 'eraser') { eraseWork = strokes; lastEraseCount = 0; }
-  addRawPoint(e);
-  if (state.tool === 'eraser') applyErase();
-  else scheduleFlush();
+  rawLL = [];
+  if (state.tool === 'eraser') {
+    eraseWork = eraseStrokes(strokes, map, addRawPoints([e]), state.eraserPx);
+    applyErase();
+  } else {
+    live = {
+      sid: ++nextStrokeId, raw: rawLL, sent: 0, color: state.color, width: state.width, slot: state.netSlot,
+      radiusM: state.snapPx * metersPerPixel(map.getZoom(), map.getCenter().lat), mask: activeMask(),
+      queue: Promise.resolve(), busy: false, cancelled: false, result: [],
+    };
+    addRawPoints([e]);
+    scheduleFlush();
+  }
   drawRaw();
 }
 
 function onMove(e: PointerEvent) {
   if (!drawing || !pointers.has(e.pointerId)) return;
-  const evs = (e.getCoalescedEvents?.() ?? []).filter(Boolean);
-  for (const ev of evs.length ? evs : [e]) addRawPoint(ev);
-  if (state.tool === 'eraser') applyErase();
-  else scheduleFlush();
+  const coalesced = (e.getCoalescedEvents?.() ?? []).filter(Boolean);
+  const px = addRawPoints(coalesced.length ? coalesced : [e]);
+  if (state.tool === 'eraser') {
+    // alle Punkte des Ereignisses in einem Durchgang radieren
+    if (eraseWork) eraseWork = eraseStrokes(eraseWork, map, px, state.eraserPx);
+    applyErase();
+  } else scheduleFlush();
   drawRaw();
 }
 
@@ -331,76 +356,86 @@ function cancelStroke() {
   if (!drawing) return;
   drawing = false;
   rawLL = [];
-  if (state.tool === 'pen') { net.drop(curSid); setPreview([]); }
-  eraseWork = null;
+  const s = live;
+  live = null;
+  if (s) {
+    s.cancelled = true;
+    // erst nach noch laufenden Anfragen verwerfen, sonst legt der Worker die Session neu an
+    void s.queue.then(() => net.drop(s.sid), () => net.drop(s.sid));
+    setPreview([], s);
+  }
+  if (eraseWork) { eraseWork = null; refreshStrokes(); }
   drawRaw();
+  runPendingRefresh();
 }
 
-function setPreview(parts: Float64Array[]) {
+function setPreview(parts: Float64Array[], s: LiveStroke) {
   const src = map.getSource('preview') as maplibregl.GeoJSONSource | undefined;
   src?.setData({
     type: 'FeatureCollection',
     features: parts.length ? [{
-      type: 'Feature', properties: { color: state.color, width: state.width },
+      type: 'Feature', properties: { color: s.color, width: s.width },
       geometry: { type: 'MultiLineString', coordinates: parts.map(flatToCoords) },
     }] : [],
   });
 }
 
+/** Neue Roh-Punkte des Strichs an den Worker; alle Anfragen eines Strichs laufen strikt nacheinander. */
+function sendPoints(s: LiveStroke, final: boolean): Promise<void> {
+  const step = async () => {
+    if (s.cancelled) return;
+    const pts = Float64Array.from(s.raw.slice(s.sent));
+    s.sent = s.raw.length;
+    if (!pts.length && !final) return;
+    const r = await net.feed(s.slot, s.sid, pts, s.radiusM, s.mask, final);
+    lastMs = r.ms;
+    if (final) s.result = r.parts;
+    else if (live === s) setPreview(r.parts, s);
+  };
+  // ein Fehler einer Vorschau-Anfrage darf den Abschluss nicht blockieren
+  s.queue = s.queue.then(step, step);
+  return s.queue;
+}
+
 function scheduleFlush() {
   if (flushQueued) return;
   flushQueued = true;
-  requestAnimationFrame(() => { flushQueued = false; void flush(false); });
-}
-
-/** Neue Rohpunkte an den Worker schicken; höchstens eine Anfrage gleichzeitig (Pipelining). */
-async function flush(final: boolean) {
-  if (inFlight && !final) return;
-  if (!drawing && !final) return;
-  const sid = curSid;
-  const pts = Float64Array.from(rawLL.slice(sentUpTo));
-  sentUpTo = rawLL.length;
-  if (!pts.length && !final) return;
-  inFlight = true;
-  const radiusM = state.snapPx * metersPerPixel(map.getZoom(), map.getCenter().lat);
-  try {
-    const r = await net.feed(state.netSlot, sid, pts, radiusM, activeMask(), final);
-    if (sid !== curSid) return;
-    curParts = r.parts;
-    lastMs = r.ms;
-    if (!final) setPreview(r.parts);
-  } catch (err) {
-    setStatus('Matching-Fehler: ' + (err as Error).message);
-  } finally {
-    inFlight = false;
-    if (!final && drawing && sentUpTo < rawLL.length) scheduleFlush();
-  }
+  requestAnimationFrame(() => {
+    flushQueued = false;
+    const s = live;
+    if (!s || s.busy || s.sent >= s.raw.length) return;
+    s.busy = true;
+    sendPoints(s, false)
+      .catch((err) => setStatus('Matching-Fehler: ' + (err as Error).message))
+      .finally(() => { s.busy = false; if (live === s && s.sent < s.raw.length) scheduleFlush(); });
+  });
 }
 let lastMs = 0;
 
 function finishStroke() {
-  const sid = curSid;
+  const s = live;
   drawing = false;
-  chain = chain.then(async () => {
-    while (inFlight) await new Promise((r) => setTimeout(r, 2));
-    // Rest senden und Session abschließen
-    const radiusM = state.snapPx * metersPerPixel(map.getZoom(), map.getCenter().lat);
-    const rest = Float64Array.from(rawLL.slice(sentUpTo));
-    sentUpTo = rawLL.length;
-    const r = await net.feed(state.netSlot, sid, rest, radiusM, activeMask(), true);
-    if (r.parts.length) commit([...strokes, { id: sid, color: state.color, width: state.width, parts: r.parts }]);
+  live = null;
+  if (!s) return;
+  sendPoints(s, true).then(() => {
+    if (s.result.length) commit([...strokes, { id: s.sid, color: s.color, width: s.width, parts: s.result }]);
     else setStatus('Kein Straßennetz in Fangreichweite – Fangradius erhöhen oder näher heranzoomen.');
-    setPreview([]);
-    rawLL = [];
-    drawRaw();
-  }).catch((e) => setStatus('Fehler: ' + e.message));
+  }).catch((e) => setStatus('Fehler: ' + (e as Error).message)).finally(() => {
+    if (!live) setPreview([], s);
+    if (rawLL === s.raw) { rawLL = []; drawRaw(); }
+    runPendingRefresh();
+  });
+}
+
+/** Während des Zeichnens aufgeschobene Netzaktualisierung nachholen. */
+function runPendingRefresh() {
+  if (refreshPending && !drawing) { refreshPending = false; scheduleNetRefresh(0); }
 }
 
 function applyErase() {
   if (!eraseWork) return;
   const src = map.getSource('strokes') as maplibregl.GeoJSONSource | undefined;
   src?.setData(strokesToFc(eraseWork));
-  lastEraseCount++;
 }
 function finishErase() {
   drawing = false;
@@ -408,6 +443,7 @@ function finishErase() {
   rawLL = [];
   drawRaw();
   if (w && w !== strokes) commit(w); else refreshStrokes();
+  runPendingRefresh();
 }
 
 // ---------------------------------------------------------------- Verlauf
@@ -527,6 +563,14 @@ initImport({
   },
 });
 
+// Absturz des Netz-Workers: Kartennetz neu aufbauen, Import-Netz ist verloren
+net.onRestart = (reason) => {
+  netBusy = false; netKey = '';
+  if (!($('netsrc-import') as HTMLInputElement).disabled) ($('import-clear') as HTMLButtonElement).click();
+  setStatus(`Netz-Worker neu gestartet (${reason}) – Kartennetz wird neu aufgebaut, Import bitte erneut laden.`);
+  scheduleNetRefresh(0);
+};
+
 setTool('pen');
 resizeRaw();
 updateButtons();
@@ -541,4 +585,3 @@ map.on('zoomend', () => { if (!drawing) setStatus(`${strokes.length} Striche · 
   get netInfo() { return netInfo; },
   refreshNet: () => refreshNet(true),
 };
-void lastEraseCount;

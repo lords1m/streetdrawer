@@ -164,6 +164,11 @@ export async function openPdfImport(ctx: PdfCtx, file: File) {
   canvas.onpointerup = () => { dragStart = null; if (region && (region[2] - region[0] < 1 || region[3] - region[1] < 1)) region = null; drawCanvas(); };
   resetSel.onclick = () => { region = null; drawCanvas(); };
   pageIn.onchange = () => { void doScan(); };
+  // Enter in einem Feld übernimmt nur den Wert (Seite neu analysieren), statt den Dialog abzuschicken
+  dlg.querySelector('form')!.onkeydown = (e) => {
+    const t = e.target as HTMLElement;
+    if (e.key === 'Enter' && t instanceof HTMLInputElement) { e.preventDefault(); t.dispatchEvent(new Event('change')); }
+  };
 
   dlg.showModal();
   requestAnimationFrame(drawCanvas);

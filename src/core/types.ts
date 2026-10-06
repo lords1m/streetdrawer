@@ -7,6 +7,8 @@ export interface LineBatch {
   coords: Float64Array;
   offsets: Uint32Array;
   cls: Uint8Array;
+  /** Ebene je Linie (Brücke 1, Boden 0, Tunnel -1). */
+  level?: Int8Array;
   kind: 'lnglat' | 'meters';
   /** Bei kind==='meters': Georeferenz (Ursprung der Meter-Koordinaten). */
   origin?: [number, number];

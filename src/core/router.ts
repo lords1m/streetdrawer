@@ -43,8 +43,8 @@ export class Router {
     this.hk[i] = k; this.hv[i] = v;
   }
 
-  /** Alle Knoten bis `limit` Meter von `src`. Danach: distTo(v). */
-  run(src: number, limit: number) {
+  /** Alle Knoten bis `limit` Meter von `src`, nur über Kanten erlaubter Klassen (Bitmaske). Danach: distTo(v). */
+  run(src: number, limit: number, mask = 0xff) {
     const g = this.g;
     if (++this.stamp === 0xffffffff) { this.seen.fill(0); this.stamp = 1; }
     const st = this.stamp;
@@ -57,6 +57,7 @@ export class Router {
       if (d > this.dist[u]) continue;
       for (let k = g.adjStart[u]; k < g.adjStart[u + 1]; k++) {
         const e = g.adjEdge[k];
+        if (!((mask >> g.edgeCls[e]) & 1)) continue;
         const v = g.edgeA[e] === u ? g.edgeB[e] : g.edgeA[e];
         const nd = d + g.edgeLen[e];
         if (nd > limit) continue;

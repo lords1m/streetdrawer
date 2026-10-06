@@ -106,6 +106,29 @@ try {
   await page.click('#redo');
   check('Redo stellt ihn wieder her', (await page.evaluate(() => window.__sz.strokes.length)) === 1);
 
+  // Zwei Striche direkt hintereinander (ohne Pause): keiner darf Punkte des anderen übernehmen
+  {
+    const before = await page.evaluate(() => window.__sz.strokes.length);
+    const half = Math.floor(dense.length / 2);
+    const A = dense.slice(0, half - 3), B = dense.slice(half + 3);
+    for (const seg of [A, B]) {
+      await page.mouse.move(rect[0] + seg[0][0], rect[1] + seg[0][1]);
+      await page.mouse.down();
+      for (const [x, y] of seg) await page.mouse.move(rect[0] + x, rect[1] + y);
+      await page.mouse.up();
+    }
+    await page.waitForFunction((n) => window.__sz.strokes.length === n + 2, before, { timeout: 10000 });
+    const ok = await page.evaluate(([A, B, n]) => {
+      const m = window.__sz.map;
+      const box = (seg) => { const xs = seg.map((p) => p[0]), ys = seg.map((p) => p[1]); return [Math.min(...xs) - 40, Math.min(...ys) - 40, Math.max(...xs) + 40, Math.max(...ys) + 40]; };
+      const inside = (s, b) => s.parts.every((p) => { for (let i = 0; i < p.length; i += 2) { const q = m.project([p[i], p[i + 1]]); if (q.x < b[0] || q.x > b[2] || q.y < b[1] || q.y > b[3]) return false; } return true; });
+      const st = window.__sz.strokes;
+      return inside(st[n], box(A)) && inside(st[n + 1], box(B));
+    }, [A, B, before]);
+    check('Schnelle Folgestriche bleiben getrennt', ok);
+    await page.click('#undo'); await page.click('#undo');
+  }
+
   // Radierer
   await page.click('#t-eraser');
   const mid = dense[Math.floor(dense.length / 2)];

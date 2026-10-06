@@ -153,7 +153,7 @@ export class PdfDocument {
       }
     }
     await ensure(1 << 16);
-    const lx = new Lexer(buf, pos);
+    const lx = new Lexer(buf, pos, winStart + buf.length >= this.size);
     const d = lx.parse();
     if (!(d instanceof Dict)) throw new Error('Trailer-Dictionary erwartet');
     return d;
@@ -225,7 +225,7 @@ export class PdfDocument {
       let idx = this.xB[num];
       if (st.nums[idx] !== num) idx = st.nums.indexOf(num);
       if (idx >= 0) {
-        const lx = new Lexer(st.buf, st.first + st.offs[idx]);
+        const lx = new Lexer(st.buf, st.first + st.offs[idx], true);
         const v = lx.parse();
         obj = v instanceof Cmd ? null : v;
       }
@@ -261,7 +261,7 @@ export class PdfDocument {
     const buf = await collect(await this.openStream(info));
     const n = (await this.resolve(d.get('N'))) as number;
     const first = (await this.resolve(d.get('First'))) as number;
-    const lx = new Lexer(buf);
+    const lx = new Lexer(buf, 0, true);
     const nums: number[] = [], offs: number[] = [];
     for (let i = 0; i < n; i++) { nums.push(lx.parse() as number); offs.push(lx.parse() as number); }
     const st = { buf, nums, offs, first };
@@ -277,7 +277,7 @@ export class PdfDocument {
       const buf = await this.read(off, off + want);
       const atEnd = off + buf.length >= this.size;
       try {
-        const lx = new Lexer(buf);
+        const lx = new Lexer(buf, 0, atEnd);
         const n = lx.parse(), g = lx.parse(), kw = lx.parse();
         void g;
         if (typeof n !== 'number' || !(kw instanceof Cmd) || kw.cmd !== 'obj') throw new Error(`Objekt-Kopf bei ${off} ungültig`);

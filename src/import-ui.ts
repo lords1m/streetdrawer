@@ -41,6 +41,10 @@ export function initImport(ctx: ImportCtx) {
   const msg = $('import-msg');
   const dlg = $('import-dialog') as HTMLDialogElement;
 
+  // Abbrechen-Knöpfe aller Dialoge: kein Submit, damit Enter immer die Hauptaktion auslöst
+  document.querySelectorAll<HTMLButtonElement>('dialog .dlg-cancel').forEach((b) => {
+    b.addEventListener('click', () => b.closest('dialog')!.close('cancel'));
+  });
   $('import-btn').addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', async () => {
     const f = fileInput.files?.[0];

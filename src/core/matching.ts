@@ -152,7 +152,7 @@ export class MatchSession {
       for (let side = 0; side < 2; side++) {
         const u = side === 0 ? g.edgeA[e] : g.edgeB[e];
         const du = side === 0 ? ta : len - ta;
-        this.router.run(u, limit);
+        this.router.run(u, limit, this.mask);
         for (let j = 0; j < cur.n; j++) {
           const f = cur.edge[j];
           if (f === e) continue;
@@ -199,7 +199,7 @@ export class MatchSession {
       let bestD = Infinity, bu = -1, bv = -1;
       for (let s = 0; s < 2; s++) {
         const u = s === 0 ? g.edgeA[e] : g.edgeB[e], du = s === 0 ? ta : le - ta;
-        this.router.run(u, limit);
+        this.router.run(u, limit, this.mask);
         for (let t = 0; t < 2; t++) {
           const v = t === 0 ? g.edgeA[f] : g.edgeB[f], dv = t === 0 ? tb : lf - tb;
           const d = du + this.router.distTo(v) + dv;
@@ -209,7 +209,7 @@ export class MatchSession {
       if (bu < 0) {
         out = Float64Array.of(cur.x[j], cur.y[j]);
       } else {
-        this.router.run(bu, limit);
+        this.router.run(bu, limit, this.mask);
         const nodes = this.router.pathTo(bv);
         out = new Float64Array(nodes.length * 2 + 2);
         nodes.forEach((nd, q) => { out[2 * q] = g.nodeX[nd]; out[2 * q + 1] = g.nodeY[nd]; });

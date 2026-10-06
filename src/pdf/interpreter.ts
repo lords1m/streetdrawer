@@ -50,13 +50,14 @@ const byte = (v: number) => (v <= 0 ? 0 : v >= 1 ? 255 : Math.round(v * 255));
 const rgbOf = (r: number, g: number, b: number) => (byte(r) << 16) | (byte(g) << 8) | byte(b);
 const cmykOf = (c: number, m: number, y: number, k: number) => rgbOf((1 - Math.min(1, c)) * (1 - Math.min(1, k)), (1 - Math.min(1, m)) * (1 - Math.min(1, k)), (1 - Math.min(1, y)) * (1 - Math.min(1, k)));
 
-const STACK = 96;
+const STACK = 256;
+const MAX_CARRY = 1 << 20;
 
 export class ContentInterpreter {
   // Grafikzustand
   private a = 1; private b = 0; private c = 0; private d = 1; private e = 0; private f = 0;
   private lw = 1; private stroke = 0; private fill = 0;
-  private gs = new Float64Array(STACK * 9); private sp = 0;
+  private gs = new Float64Array(STACK * 9); private sp = 0; private spOverflow = 0;
   // Marked Content / Ebenen
   private ocStack = new Int32Array(256); private ocTop = 0; private oc = 0;
   readonly ocNames: string[] = ['']; private ocIndex = new Map<string, number>();
@@ -108,18 +109,20 @@ export class ContentInterpreter {
   // ------------------------------------------------------------------ Einstiegspunkte
   async runPage(contents: number[], resources: PdfObj, onRaw?: (n: number) => void) {
     this.cur = await this.prepareRes(resources);
+    this.nops = 0;
     for (const num of contents) {
       const info = await this.doc.getStream(num);
       if (!info) continue;
-      await this.exec(await this.doc.openStream(info, onRaw), 0);
+      // Operanden nicht zurücksetzen: Operanden und Operator dürfen in verschiedenen Strömen stehen
+      await this.exec(await this.doc.openStream(info, onRaw), 0, false);
     }
   }
 
-  private async exec(stream: ReadableStream<Uint8Array>, depth: number) {
+  private async exec(stream: ReadableStream<Uint8Array>, depth: number, resetOps = true) {
     let carry: Uint8Array | null = null;
-    this.nops = 0;
-    const step = async (buf: Uint8Array, final: boolean): Promise<number> => {
-      let pos = 0;
+    if (resetOps) this.nops = 0;
+    const step = async (buf: Uint8Array, final: boolean, from = 0): Promise<number> => {
+      let pos = from;
       for (;;) {
         const r = this.run(buf, pos, buf.length, final);
         pos = r.pos;
@@ -130,7 +133,10 @@ export class ContentInterpreter {
     for await (const chunk of iterate(stream)) {
       let buf = chunk;
       if (carry) { buf = new Uint8Array(carry.length + chunk.length); buf.set(carry); buf.set(chunk, carry.length); }
-      const pos = await step(buf, false);
+      let pos = await step(buf, false);
+      // Ein Token, das nach MAX_CARRY Bytes nicht endet (offene Klammer, fehlendes EI), ist defekt:
+      // den Puffer als abgeschlossen behandeln statt den Rest des Stroms anzusammeln und quadratisch neu zu scannen.
+      if (buf.length - pos > MAX_CARRY) pos = await step(buf, true, pos);
       carry = pos < buf.length ? buf.subarray(pos) : null;
       this.opt.onChunk?.();
     }
@@ -161,6 +167,7 @@ export class ContentInterpreter {
       if (!isName(st, 'Form')) return;
     }
     const savedCur = this.cur;
+    const spBefore = this.sp, ovBefore = this.spOverflow;
     this.saveState();
     const savedPath = this.n, savedSub = this.nsub;
     this.active.add(ref.num);
@@ -189,7 +196,9 @@ export class ContentInterpreter {
       await this.runBytes(fc.bytes, depth + 1);
     } finally {
       this.active.delete(ref.num);
-      this.restoreState();
+      // auf die Stapeltiefe vor dem Formular zurück, egal wie viele q/Q das Formular offen ließ
+      if (spBefore < STACK) { this.spOverflow = ovBefore; this.sp = spBefore + 1; this.restoreState(); }
+      else { this.spOverflow = ovBefore; this.sp = spBefore; }
       this.cur = savedCur;
       this.n = savedPath; this.nsub = savedSub;
       this.nops = 0;
@@ -198,13 +207,14 @@ export class ContentInterpreter {
 
   // ------------------------------------------------------------------ Grafikzustand
   private saveState() {
-    if (this.sp >= STACK) return;
+    if (this.sp >= STACK) { this.spOverflow++; return; }
     const o = this.sp++ * 9;
     const g = this.gs;
     g[o] = this.a; g[o + 1] = this.b; g[o + 2] = this.c; g[o + 3] = this.d; g[o + 4] = this.e; g[o + 5] = this.f;
     g[o + 6] = this.lw; g[o + 7] = this.stroke; g[o + 8] = this.fill;
   }
   private restoreState() {
+    if (this.spOverflow > 0) { this.spOverflow--; return; }
     if (this.sp === 0) return;
     const o = --this.sp * 9;
     const g = this.gs;

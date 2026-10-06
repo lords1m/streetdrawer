@@ -10,6 +10,7 @@ import { classifyHighway } from './import/sink';
 export const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
 const TILE_ZOOM = 16;
 const TTL_MS = 7 * 24 * 3600 * 1000;
+const FAIL_BACKOFF_MS = 10 * 60 * 1000;
 
 export interface OverpassTile { lines: number[][]; cls: number[]; t: number } // lines: flache lng/lat-Arrays
 
@@ -106,6 +107,8 @@ function idbStore() {
 
 export class OverpassClient {
   private mem = new Map<string, OverpassTile>();
+  /** Fehlgeschlagene Tiles: nicht vor diesem Zeitpunkt erneut abfragen (Nutzungsrichtlinie). */
+  private failedUntil = new Map<string, number>();
   private chain: Promise<unknown> = Promise.resolve();
   private lastAt = 0;
   requests = 0;
@@ -133,7 +136,13 @@ export class OverpassClient {
           const stored = await this.d.store?.get(key);
           if (stored && this.d.now() - stored.t < TTL_MS) t = stored;
         }
-        if (!t) t = await this.fetchTile(z, x, y, key);
+        if (!t) {
+          const until = this.failedUntil.get(key);
+          if (until !== undefined && this.d.now() < until) continue;
+          t = await this.fetchTile(z, x, y, key);
+          if (!t) this.failedUntil.set(key, this.d.now() + FAIL_BACKOFF_MS);
+          else this.failedUntil.delete(key);
+        }
         if (t) { this.mem.set(key, t); out.push(t); }
       }
       return out;

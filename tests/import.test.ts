@@ -109,6 +109,17 @@ describe('Overpass', () => {
     expect(sink.coords.n).toBe(6);
   });
 
+  it('teilt Wege an fehlenden Knoten', async () => {
+    const doc = { elements: [
+      { type: 'way', id: 10, nodes: [1, 2, 3, 4, 5], tags: { highway: 'residential' } },
+      { type: 'node', id: 1, lat: 52.5, lon: 13.4 }, { type: 'node', id: 2, lat: 52.5, lon: 13.401 },
+      { type: 'node', id: 4, lat: 52.501, lon: 13.402 }, { type: 'node', id: 5, lat: 52.501, lon: 13.403 },
+    ] };
+    const sink = new LineSink();
+    await importOverpass(new Blob([JSON.stringify(doc)]), sink);
+    expect(sink.lineCount).toBe(2);
+  });
+
   it('parseOverpass + tilesToBatch', () => {
     const t = parseOverpass({ elements: [{ type: 'way', tags: { highway: 'service' }, geometry: [{ lat: 1, lon: 2 }, { lat: 3, lon: 4 }] }] });
     const b = tilesToBatch([t, t])!;
@@ -153,17 +164,31 @@ describe('Overpass', () => {
     await c.tiles([[34001, 20000]]);
     expect(sleeps.some((s) => s > 0)).toBe(true);
   });
+
+  it('fragt fehlgeschlagene Tiles nicht bei jeder Bewegung erneut ab', async () => {
+    let t = 0, calls = 0;
+    const c = new OverpassClient({
+      fetchFn: (async () => { calls++; return new Response('bad', { status: 400 }); }) as typeof fetch,
+      now: () => t, sleep: async (ms) => { t += ms; }, minGapMs: 0,
+      store: { get: async () => undefined, set: async () => {} },
+    });
+    expect(await c.tiles([[1, 1]])).toEqual([]);
+    expect(await c.tiles([[1, 1]])).toEqual([]);
+    expect(calls).toBe(1);
+    t += 11 * 60 * 1000; // nach der Sperrzeit wieder erlaubt
+    await c.tiles([[1, 1]]);
+    expect(calls).toBe(2);
+  });
 });
 
 describe('OSM-PBF', () => {
   /** Minimal-PBF: 1 Block mit DenseNodes + 1 Way. */
-  function makePbf(): Uint8Array {
+  function makePbf(pts: number[][] = [[13.4, 52.5], [13.401, 52.5], [13.401, 52.501], [50, 50]], refs: number[] = [1, 2, 3]): Uint8Array {
     const strings = ['', 'highway', 'residential', 'name'];
     const block = new PbfWriter();
     block.writeMessage(1, (_o: null, w: PbfWriter) => { for (const s of strings) w.writeBytesField(1, new TextEncoder().encode(s)); }, null);
     const gran = 100;
     const toI = (deg: number) => Math.round(deg / 1e-9 / gran);
-    const pts = [[13.4, 52.5], [13.401, 52.5], [13.401, 52.501], [50, 50]];
     block.writeMessage(2, (_o: null, g: PbfWriter) => {
       g.writeMessage(2, (_o2: null, d: PbfWriter) => {
         const ids: number[] = [], lats: number[] = [], lons: number[] = [];
@@ -177,7 +202,7 @@ describe('OSM-PBF', () => {
       g.writeMessage(3, (_o2: null, w: PbfWriter) => {
         w.writeVarintField(1, 100);
         w.writePackedVarint(2, [1]); w.writePackedVarint(3, [2]);
-        w.writePackedSVarint(8, [1, 1, 1]); // Referenzen 1,2,3 (Delta)
+        w.writePackedSVarint(8, refs.map((r, i) => r - (i ? refs[i - 1] : 0))); // Referenzen (Delta)
       }, null);
       g.writeMessage(3, (_o2: null, w: PbfWriter) => { // Weg ohne highway
         w.writeVarintField(1, 101); w.writePackedVarint(2, [3]); w.writePackedVarint(3, [3]); w.writePackedSVarint(8, [1, 1]);
@@ -216,6 +241,16 @@ describe('OSM-PBF', () => {
     const sink = new LineSink({ minLng: 13.3, minLat: 52.4, maxLng: 13.4005, maxLat: 52.6 });
     await importOsmPbf(new Blob([makePbf() as BlobPart]), sink, () => {}, { minLng: 13.3, minLat: 52.4, maxLng: 13.4005, maxLat: 52.6 });
     expect(sink.lineCount).toBe(0); // nur 1 Knoten im Ausschnitt -> keine Linie
+  });
+
+  it('teilt Wege an Knoten außerhalb des Ausschnitts statt eine Sehne zu ziehen', async () => {
+    // Weg 1-2-3-4-5, Knoten 3 liegt außerhalb -> zwei Linien (1-2 und 4-5), keine Verbindung 2-4
+    const pts = [[13.40, 52.50], [13.41, 52.50], [13.45, 52.60], [13.42, 52.50], [13.43, 52.50]];
+    const bbox = { minLng: 13.3, minLat: 52.4, maxLng: 13.44, maxLat: 52.55 };
+    const sink = new LineSink(bbox);
+    await importOsmPbf(new Blob([makePbf(pts, [1, 2, 3, 4, 5]) as BlobPart]), sink, () => {}, bbox);
+    expect(sink.lineCount).toBe(2);
+    expect(Array.from(sink.offsets.a.subarray(0, 2))).toEqual([0, 2]);
   });
 });
 

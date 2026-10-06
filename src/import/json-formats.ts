@@ -44,8 +44,13 @@ export async function importOverpass(blob: Blob, sink: LineSink, progress?: Prog
   }, (f) => progress?.(f, 'Overpass-JSON wird gelesen'));
   if (!found) throw new Error('Kein Overpass-JSON ("elements") erkannt.');
   for (const w of pending) {
-    const line: [number, number][] = [];
-    for (const id of w.nodes) { const p = nodes.get(id); if (p) line.push(p); }
+    // an fehlenden Knoten teilen statt eine Sehne über die Lücke zu ziehen
+    let line: [number, number][] = [];
+    for (const id of w.nodes) {
+      const p = nodes.get(id);
+      if (p) line.push(p);
+      else { sink.addLine(line, w.cls); line = []; }
+    }
     sink.addLine(line, w.cls);
   }
 }
