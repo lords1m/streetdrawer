@@ -95,7 +95,7 @@ kostet grob 10–15 USD). CORS schützt davor nicht. In der GCP-Abrechnung desha
 
 ## Datenschutz
 
-- Der **Suchtext** geht an Nominatim, den Suchdienst der OpenStreetMap Foundation (Server in der EU), zusammen mit dem
+- Der **Suchtext** geht an Nominatim, den Suchdienst der OpenStreetMap Foundation, zusammen mit dem
   Kartenausschnitt (zur Gewichtung der Treffer) und dem Referer der Seite. Ergebnisse werden im Browser gecacht.
 - Der **Standort** („Mein Standort“) bleibt im Browser und wird nicht übertragen.
 - Kacheln kommen aus Cloud Storage bzw. Firebase Hosting, Schriften (abschaltbar) von `protomaps.github.io`.
