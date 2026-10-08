@@ -56,6 +56,7 @@ const net = new NetClient();
 // Kartenquelle: eigene Überschreibung → Weltkarte (Cloud Storage) → berlin.pmtiles neben der App
 const FALLBACK_URL = new URL(FALLBACK_PMTILES_FILE, location.href).toString();
 const override = loadPref<string | null>('pmtiles', null);
+setStatus('Karte wird geprüft …');
 const start = await chooseSource([...(override ? [override] : []), WORLD_PMTILES_URL, FALLBACK_URL], PROBE_TIMEOUT_MS, protocol);
 state.pmtilesUrl = start.url;
 /** Ausdehnung der aktiven Datei (Header); null = unbekannt/überall. */
