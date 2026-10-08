@@ -89,7 +89,7 @@
       <section>
         <h2>Karte</h2>
         <label class="row col">PMTiles-URL (Protomaps-Schema)
-          <span class="inline"><input type="url" id="pm-url" placeholder="https://…/stadt.pmtiles" /><button id="pm-load">Laden</button></span>
+          <span class="inline"><input type="url" id="pm-url" placeholder="leer = Weltkarte (Standard)" /><button id="pm-load">Laden</button></span>
         </label>
         <label class="check"><input type="checkbox" id="labels" checked /> Beschriftung (lädt Schriften von protomaps.github.io)</label>
       </section>
@@ -108,6 +108,7 @@
       </section>
     </aside>
 
+    <div id="map-hint" role="alert" hidden>Hier gibt es in der gewählten Karte keine Daten.</div>
     <footer id="status" role="status"></footer>
   </div>
 

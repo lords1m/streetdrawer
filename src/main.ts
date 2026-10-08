@@ -8,11 +8,14 @@ import { metersPerPixel } from './core/geo';
 import { GrowF64, GrowU32 } from './core/grow';
 import type { LineBatch, Slot, Stroke } from './core/types';
 import { exportPng, exportSvg } from './export';
-import { kindToClass, makeStyle, roadLayerIds, type Theme } from './map-style';
+import { BASE_SOURCE, kindToClass, makeStyle, roadLayerIds, type Theme } from './map-style';
 import { NetClient } from './net-client';
 import { eraseStrokes } from './erase';
 import { initImport } from './import-ui';
 import { initSearch } from './search-ui';
+import { DEFAULT_VIEW, FALLBACK_PMTILES_FILE, PROBE_TIMEOUT_MS, WORLD_PMTILES_URL } from './config';
+import { chooseSource, covers, probeTiles, type TileBounds } from './tile-source';
+import { loadPref, savePref } from './prefs';
 
 // ---------------------------------------------------------------- Zustand
 type Tool = 'pen' | 'eraser' | 'pan';
@@ -29,7 +32,7 @@ export const state = {
   theme: (localStorage.getItem('sz-theme') as Theme | null) ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
   labels: true,
   showNet: false,
-  pmtilesUrl: new URL('berlin.pmtiles', location.href).toString(),
+  pmtilesUrl: '',
   overpass: false,
   thin: true,
 };
@@ -49,13 +52,24 @@ const protocol = new Protocol();
 maplibregl.addProtocol('pmtiles', protocol.tile);
 const net = new NetClient();
 
+// Kartenquelle: eigene Überschreibung → Weltkarte (Cloud Storage) → berlin.pmtiles neben der App
+const FALLBACK_URL = new URL(FALLBACK_PMTILES_FILE, location.href).toString();
+const override = loadPref<string | null>('pmtiles', null);
+const start = await chooseSource([...(override ? [override] : []), WORLD_PMTILES_URL, FALLBACK_URL], PROBE_TIMEOUT_MS, protocol);
+state.pmtilesUrl = start.url;
+/** Ausdehnung der aktiven Datei (Header); null = unbekannt/überall. */
+let tileBounds: TileBounds | null = start.bounds;
+const startMsg = override && start.index > 0
+  ? `Eigene Karte nicht erreichbar – ${start.url === FALLBACK_URL ? 'Berlin-Karte' : 'Weltkarte'} geladen`
+  : start.url === FALLBACK_URL ? 'Weltkarte nicht erreichbar – Berlin-Karte geladen' : '';
+
 document.documentElement.dataset.theme = state.theme;
 
 const map = new maplibregl.Map({
   container: 'map',
   style: makeStyle(state.theme, state.pmtilesUrl, state.labels),
-  center: [13.405, 52.52],
-  zoom: 13,
+  center: DEFAULT_VIEW.center,
+  zoom: DEFAULT_VIEW.zoom,
   maxZoom: 19,
   maxPitch: 0,
   dragRotate: false,
@@ -521,13 +535,51 @@ $('labels').addEventListener('change', (e) => {
   state.labels = (e.target as HTMLInputElement).checked;
   map.setStyle(makeStyle(state.theme, state.pmtilesUrl, state.labels), { diff: false });
 });
-$('pm-load').addEventListener('click', () => {
-  const v = ($('pm-url') as HTMLInputElement).value.trim();
-  if (!v) return;
-  state.pmtilesUrl = new URL(v, location.href).toString();
-  map.setStyle(makeStyle(state.theme, state.pmtilesUrl, state.labels), { diff: false });
-  setStatus('Karte: ' + state.pmtilesUrl);
+// ---------------------------------------------------------------- Kartenquelle wechseln
+function setSource(url: string, bounds: TileBounds | null) {
+  state.pmtilesUrl = url;
+  tileBounds = bounds;
+  map.setStyle(makeStyle(state.theme, url, state.labels), { diff: false });
+  checkCoverage();
+}
+
+const pmUrl = $('pm-url') as HTMLInputElement;
+pmUrl.value = override ?? '';
+// Eigene URL laden; leeres Feld setzt auf die Standardkarte zurück
+$('pm-load').addEventListener('click', async () => {
+  const v = pmUrl.value.trim();
+  const url = v ? new URL(v, location.href).toString() : null;
+  setStatus('Karte wird geprüft …');
+  const r = await chooseSource(url ? [url] : [WORLD_PMTILES_URL, FALLBACK_URL], PROBE_TIMEOUT_MS, protocol);
+  if (url && !r.ok) { setStatus('Karte nicht erreichbar (CORS/Range-Requests?): ' + url); return; }
+  savePref('pmtiles', url);
+  setSource(r.url, r.bounds);
+  setStatus(url ? 'Karte: ' + r.url : r.url === FALLBACK_URL ? 'Weltkarte nicht erreichbar – Berlin-Karte geladen' : 'Standardkarte geladen');
 });
+
+// Fällt die Quelle zur Laufzeit aus: Header neu lesen und nur wenn der scheitert einmal auf Berlin wechseln
+// (einzelne Kachelfehler sind meist vorübergehend)
+let reprobing = false;
+map.on('error', (e) => {
+  if ((e as { sourceId?: string }).sourceId !== BASE_SOURCE || reprobing || state.pmtilesUrl === FALLBACK_URL) return;
+  reprobing = true;
+  const url = state.pmtilesUrl;
+  void probeTiles(url, PROBE_TIMEOUT_MS).then(async (r) => {
+    if (!r.ok && state.pmtilesUrl === url) {
+      const fb = await probeTiles(FALLBACK_URL, PROBE_TIMEOUT_MS, protocol);
+      setSource(FALLBACK_URL, fb.bounds);
+      setStatus('Karte nicht mehr erreichbar – Berlin-Karte geladen');
+    }
+  }).finally(() => { reprobing = false; });
+});
+
+// Hinweis, wenn die Kartenmitte außerhalb der aktiven Datei liegt (z. B. Berlin-Fallback und Ziel Paris)
+const mapHint = $('map-hint');
+function checkCoverage() {
+  const c = map.getCenter();
+  mapHint.hidden = covers(tileBounds, c.lng, c.lat);
+}
+map.on('moveend', checkCoverage);
 $('shownet').addEventListener('change', (e) => { state.showNet = (e.target as HTMLInputElement).checked; void showNetOverlay(); });
 document.querySelectorAll<HTMLInputElement>('input[name=netsrc]').forEach((r) => r.addEventListener('change', () => {
   state.netSlot = r.value as Slot; updateNetInfo(); if (state.showNet) void showNetOverlay();
@@ -578,7 +630,8 @@ net.onRestart = (reason) => {
 setTool('pen');
 resizeRaw();
 updateButtons();
-setStatus('Karte lädt …');
+setStatus(startMsg || 'Karte lädt …');
+checkCoverage();
 map.on('zoomend', () => { if (!drawing) setStatus(`${strokes.length} Striche · Zoom ${map.getZoom().toFixed(1)}`); });
 
 // Testschnittstelle für Playwright
@@ -589,4 +642,5 @@ map.on('zoomend', () => { if (!drawing) setStatus(`${strokes.length} Striche · 
   get netInfo() { return netInfo; },
   refreshNet: () => refreshNet(true),
   search,
+  get tileBounds() { return tileBounds; },
 };
