@@ -16,6 +16,7 @@ import { initSearch } from './search-ui';
 import { DEFAULT_VIEW, FALLBACK_PMTILES_FILE, PROBE_TIMEOUT_MS, WORLD_PMTILES_URL } from './config';
 import { chooseSource, covers, probeTiles, type TileBounds } from './tile-source';
 import { loadPref, savePref } from './prefs';
+import { drawingStore } from './persist';
 
 // ---------------------------------------------------------------- Zustand
 type Tool = 'pen' | 'eraser' | 'pan';
@@ -65,11 +66,17 @@ const startMsg = override && start.index > 0
 
 document.documentElement.dataset.theme = state.theme;
 
+const savedView = loadPref<{ center: [number, number]; zoom: number } | null>('view', null);
+const lastView = savedView && Array.isArray(savedView.center) && savedView.center.every(Number.isFinite) && Number.isFinite(savedView.zoom)
+  ? savedView : DEFAULT_VIEW;
+
 const map = new maplibregl.Map({
   container: 'map',
   style: makeStyle(state.theme, state.pmtilesUrl, state.labels),
-  center: DEFAULT_VIEW.center,
-  zoom: DEFAULT_VIEW.zoom,
+  // Startansicht: URL-Hash (#zoom/lat/lng, setzt MapLibre selbst) → letzte Position → Berlin
+  center: lastView.center,
+  zoom: lastView.zoom,
+  hash: true,
   maxZoom: 19,
   maxPitch: 0,
   dragRotate: false,
@@ -78,6 +85,13 @@ const map = new maplibregl.Map({
   attributionControl: { compact: true },
   fadeDuration: 0,
 });
+// letzte Position merken – auch die aus dem URL-Hash, die MapLibre schon im Konstruktor anspringt
+const saveView = () => {
+  const c = map.getCenter();
+  savePref('view', { center: [+c.lng.toFixed(6), +c.lat.toFixed(6)], zoom: +map.getZoom().toFixed(2) });
+};
+map.on('moveend', saveView);
+map.once('load', saveView);
 map.touchZoomRotate.disableRotation();
 map.keyboard.disableRotation();
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
@@ -462,16 +476,30 @@ function finishErase() {
 }
 
 // ---------------------------------------------------------------- Verlauf
+const drawingDb = drawingStore();
+const persist = () => drawingDb.save(strokes, nextStrokeId);
+window.addEventListener('pagehide', () => drawingDb.flush());
+
 function commit(next: Stroke[]) {
   strokes = next;
   history = history.slice(0, histIdx + 1);
   history.push(strokes);
   if (history.length > 200) history.shift();
   histIdx = history.length - 1;
-  refreshStrokes(); updateButtons();
+  refreshStrokes(); updateButtons(); persist();
 }
-function undo() { if (histIdx > 0) { histIdx--; strokes = history[histIdx]; refreshStrokes(); updateButtons(); } }
-function redo() { if (histIdx < history.length - 1) { histIdx++; strokes = history[histIdx]; refreshStrokes(); updateButtons(); } }
+function undo() { if (histIdx > 0) { histIdx--; strokes = history[histIdx]; refreshStrokes(); updateButtons(); persist(); } }
+function redo() { if (histIdx < history.length - 1) { histIdx++; strokes = history[histIdx]; refreshStrokes(); updateButtons(); persist(); } }
+
+// Gespeicherte Zeichnung übernehmen – nur wenn seit dem Start noch nichts gezeichnet wurde
+void drawingDb.load().then((d) => {
+  if (!d || !d.strokes.length || history.length > 1 || strokes.length) return;
+  strokes = d.strokes;
+  history = [strokes]; histIdx = 0;
+  nextStrokeId = Math.max(nextStrokeId, d.nextStrokeId, ...strokes.map((s) => s.id + 1));
+  refreshStrokes(); updateButtons();
+  setStatus(`${strokes.length} ${strokes.length === 1 ? 'Strich' : 'Striche'} aus der letzten Sitzung wiederhergestellt`);
+});
 function updateButtons() {
   ($('undo') as HTMLButtonElement).disabled = histIdx === 0;
   ($('redo') as HTMLButtonElement).disabled = histIdx === history.length - 1;
