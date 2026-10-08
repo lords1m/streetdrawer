@@ -7,7 +7,7 @@ import { CLASS_MAIN, CLASS_PATH, CLASS_STREET } from './core/graph';
 import { metersPerPixel } from './core/geo';
 import { GrowF64, GrowU32 } from './core/grow';
 import type { LineBatch, Slot, Stroke } from './core/types';
-import { exportPng, exportSvg } from './export';
+import { exportPng, exportSvg, strokesBounds } from './export';
 import { BASE_SOURCE, kindToClass, makeStyle, roadLayerIds, type Theme } from './map-style';
 import { NetClient } from './net-client';
 import { eraseStrokes } from './erase';
@@ -475,6 +475,7 @@ function redo() { if (histIdx < history.length - 1) { histIdx++; strokes = histo
 function updateButtons() {
   ($('undo') as HTMLButtonElement).disabled = histIdx === 0;
   ($('redo') as HTMLButtonElement).disabled = histIdx === history.length - 1;
+  ($('jump-drawing') as HTMLButtonElement).disabled = strokes.length === 0;
   setStatus(`${strokes.length} ${strokes.length === 1 ? 'Strich' : 'Striche'}`);
 }
 
@@ -585,14 +586,21 @@ document.querySelectorAll<HTMLInputElement>('input[name=netsrc]').forEach((r) =>
   state.netSlot = r.value as Slot; updateNetInfo(); if (state.showNet) void showNetOverlay();
 }));
 
+// Striche an mehreren Orten wiederfinden
+$('jump-drawing').addEventListener('click', () => {
+  const b = strokesBounds(strokes);
+  if (b) map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, maxZoom: 17, duration: 800 });
+});
+
 $('ex-png').addEventListener('click', () => void doExport('png'));
 $('ex-svg').addEventListener('click', () => void doExport('svg'));
 async function doExport(kind: 'png' | 'svg') {
+  const b = map.getBounds();
   const o = {
     width: Number(($('ex-width') as HTMLInputElement).value) || 2000,
-    padding: 0.06,
     background: ($('ex-bg') as HTMLSelectElement).value,
     zoom: map.getZoom(),
+    view: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] as [number, number, number, number],
   };
   try {
     if (kind === 'png') await exportPng(strokes, o); else exportSvg(strokes, o);
