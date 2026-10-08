@@ -14,6 +14,11 @@ npm run e2e            # Playwright-Hauptpfade (einmalig: npx playwright install
 npm run build          # statisches Bundle in dist/
 ```
 
+Ohne Zugang zum Protomaps-Build: `npm run tiles:test` schreibt ein **synthetisches** Straßenraster über Berlin nach
+`public/berlin.pmtiles` (wenige KB, keine echten Straßen – nur für Tests, nicht deployen). Die E2E-Tests sperren die
+Weltkarte (prüfen so den Berlin-Fallback) und ersetzen Nominatim durch feste Antworten. Anderes Chromium:
+`CHROMIUM_PATH=/pfad/zu/chromium npm run e2e`; gebautes Bundle prüfen: `E2E_PROD=1 npm run e2e`.
+
 ## PMTiles erzeugen
 
 Benötigt das [pmtiles-CLI](https://docs.protomaps.com/pmtiles/cli) (`pmtiles` im PATH oder `PMTILES_BIN=…`).

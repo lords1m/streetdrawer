@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "tiles:berlin": "node scripts/extract-berlin.mjs",
+    "tiles:test": "node scripts/gen-test-tiles.mjs public/berlin.pmtiles",
     "e2e": "node scripts/e2e.mjs",
     "bench:pdf": "node --experimental-strip-types scripts/bench-pdf.mjs"
   },

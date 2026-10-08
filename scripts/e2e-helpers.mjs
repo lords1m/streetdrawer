@@ -37,3 +37,48 @@ export async function drawAlong(page, rect, ll, noisePx) {
   await page.mouse.up();
   await page.waitForTimeout(400);
 }
+
+/** Längste sichtbare Straße im mittleren Bildbereich als Bildschirmpunkte (px) oder null. */
+export async function findRoad(page, box = [360, 150, 1100, 700]) {
+  return page.evaluate((box) => {
+    const m = window.__sz.map;
+    const ids = m.getStyle().layers.filter((l) => l['source-layer'] === 'roads' && l.type === 'line' && /major|highway|minor/.test(l.id) && !/casing/.test(l.id)).map((l) => l.id);
+    const feats = m.queryRenderedFeatures(undefined, { layers: ids });
+    let best = null, bl = 0;
+    for (const f of feats) {
+      const lines = f.geometry.type === 'LineString' ? [f.geometry.coordinates] : f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [];
+      for (const l of lines) {
+        const pts = l.map((c) => m.project(c));
+        const inside = pts.filter((p) => p.x > box[0] && p.x < box[2] && p.y > box[1] && p.y < box[3]);
+        if (inside.length < 3) continue;
+        let len = 0;
+        for (let i = 1; i < inside.length; i++) len += Math.hypot(inside[i].x - inside[i - 1].x, inside[i].y - inside[i - 1].y);
+        if (len > bl) { bl = len; best = inside.map((p) => [p.x, p.y]); }
+      }
+    }
+    return best;
+  }, box);
+}
+
+/** Dichte Punktfolge entlang einer Bildschirmlinie mit Rauschen (±noisePx). */
+export function densify(road, noisePx, seed = 3) {
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 0xffffffff - 0.5; };
+  const dense = [];
+  for (let i = 1; i < road.length; i++) {
+    const [x0, y0] = road[i - 1], [x1, y1] = road[i];
+    const n = Math.max(1, Math.round(Math.hypot(x1 - x0, y1 - y0) / 6));
+    for (let k = 0; k < n; k++) dense.push([x0 + ((x1 - x0) * k) / n + rnd() * noisePx * 2, y0 + ((y1 - y0) * k) / n + rnd() * noisePx * 2]);
+  }
+  return dense;
+}
+
+/** Nominatim-Attrappe: liefert je Suchtext (Kleinschreibung) die hinterlegten Treffer und zählt die Anfragen. */
+export async function mockNominatim(ctx, fixtures) {
+  const calls = [];
+  await ctx.route('https://nominatim.openstreetmap.org/**', (route) => {
+    const q = new URL(route.request().url()).searchParams.get('q') ?? '';
+    calls.push(q);
+    route.fulfill({ json: fixtures[q.trim().toLowerCase()] ?? [], headers: { 'Access-Control-Allow-Origin': '*' } });
+  });
+  return calls;
+}
