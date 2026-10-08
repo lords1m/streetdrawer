@@ -12,6 +12,7 @@ import { kindToClass, makeStyle, roadLayerIds, type Theme } from './map-style';
 import { NetClient } from './net-client';
 import { eraseStrokes } from './erase';
 import { initImport } from './import-ui';
+import { initSearch } from './search-ui';
 
 // ---------------------------------------------------------------- Zustand
 type Tool = 'pen' | 'eraser' | 'pan';
@@ -563,6 +564,9 @@ initImport({
   },
 });
 
+// Ortssuche, letzte Suchen, Standort
+const search = initSearch({ map, setStatus });
+
 // Absturz des Netz-Workers: Kartennetz neu aufbauen, Import-Netz ist verloren
 net.onRestart = (reason) => {
   netBusy = false; netKey = '';
@@ -584,4 +588,5 @@ map.on('zoomend', () => { if (!drawing) setStatus(`${strokes.length} Striche · 
   get lastMs() { return lastMs; },
   get netInfo() { return netInfo; },
   refreshNet: () => refreshNet(true),
+  search,
 };

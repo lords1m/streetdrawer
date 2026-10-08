@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  GeocodeClient, buildSearchUrl, normalizeQuery, parseCoords, parseNominatim, placeKind,
-  type CachedSearch, type NominatimItem,
+  GeocodeClient, KIND_ZOOM, buildSearchUrl, normalizeQuery, parseCoords, parseNominatim, placeKind,
+  type CachedSearch, type NominatimItem, type Place,
 } from '../src/geocode';
+import { placeCamera } from '../src/search-ui';
 
 const BERLIN: NominatimItem = {
   lat: '52.5170365', lon: '13.3888599', name: 'Berlin', display_name: 'Berlin, Deutschland',
@@ -175,5 +176,28 @@ describe('GeocodeClient', () => {
     expect((await c1.search('Berlin')).status).toBe('offline');
     const c2 = new GeocodeClient({ fetchFn: async () => jsonRes({}, 500), store: memStore().store, ...fakeClock() });
     expect(await c2.search('Berlin')).toMatchObject({ status: 'fehler', message: 'HTTP 500' });
+  });
+});
+
+describe('Kamera für Treffer', () => {
+  const place = (bbox: [number, number, number, number], kind: Place['kind'], lng = 0, lat = 0): Place =>
+    ({ name: 'x', label: 'x', lng, lat, bbox, kind });
+
+  it('bbox mit Höchstzoom je Ortstyp', () => {
+    expect(placeCamera(parseNominatim([BERLIN])[0])).toEqual({
+      type: 'bounds', bounds: [[13.088345, 52.3382448], [13.7611609, 52.6755087]], maxZoom: KIND_ZOOM.stadt,
+    });
+    expect(placeCamera(place([13.4, 52.5, 13.41, 52.51], 'adresse'))).toMatchObject({ type: 'bounds', maxZoom: 18 });
+  });
+
+  it('Punkt-bbox → Mittelpunkt mit Zoom des Ortstyps', () => {
+    expect(placeCamera(place([13.4, 52.5, 13.4, 52.5], 'adresse', 13.4, 52.5))).toEqual({ type: 'center', center: [13.4, 52.5], zoom: 18 });
+  });
+
+  it('riesige bbox oder Antimeridian → Mittelpunkt mit Zoom 5', () => {
+    // Frankreich mit Überseegebieten
+    expect(placeCamera(place([-178.3, -50.2, 172.3, 51.1], 'land', 2.3, 46.6))).toEqual({ type: 'center', center: [2.3, 46.6], zoom: 5 });
+    // über den Antimeridian (West > Ost)
+    expect(placeCamera(place([177, -21, -178, -12], 'land', 178, -17))).toMatchObject({ type: 'center', zoom: 5 });
   });
 });
