@@ -614,10 +614,25 @@ document.querySelectorAll<HTMLInputElement>('input[name=netsrc]').forEach((r) =>
   state.netSlot = r.value as Slot; updateNetInfo(); if (state.showNet) void showNetOverlay();
 }));
 
+/** Rand für fitBounds: Kopfleiste oben, offenes Panel rechts (Desktop) bzw. unten (Handy). */
+function viewPadding(): maplibregl.PaddingOptions {
+  const pad = { top: $('bar').getBoundingClientRect().bottom + 16, bottom: 50, left: 40, right: 40 };
+  const panel = $('panel');
+  if (!panel.classList.contains('closed')) {
+    if (matchMedia('(max-width: 720px)').matches) pad.bottom = Math.max(pad.bottom, panel.offsetHeight + 60);
+    else pad.right = panel.offsetWidth + 32;
+  }
+  // bei sehr kleinen Fenstern nicht mehr Rand als Karte
+  const c = map.getContainer();
+  if (pad.left + pad.right > c.clientWidth * 0.8) pad.left = pad.right = 20;
+  if (pad.top + pad.bottom > c.clientHeight * 0.8) { pad.top = Math.min(pad.top, 80); pad.bottom = 20; }
+  return pad;
+}
+
 // Striche an mehreren Orten wiederfinden
 $('jump-drawing').addEventListener('click', () => {
   const b = strokesBounds(strokes);
-  if (b) map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, maxZoom: 17, duration: 800 });
+  if (b) map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: viewPadding(), maxZoom: 17, duration: 800 });
 });
 
 $('ex-png').addEventListener('click', () => void doExport('png'));
@@ -653,7 +668,7 @@ initImport({
 });
 
 // Ortssuche, letzte Suchen, Standort
-const search = initSearch({ map, setStatus });
+const search = initSearch({ map, setStatus, padding: viewPadding });
 
 // Absturz des Netz-Workers: Kartennetz neu aufbauen, Import-Netz ist verloren
 net.onRestart = (reason) => {

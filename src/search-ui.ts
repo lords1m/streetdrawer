@@ -7,6 +7,8 @@ export interface SearchCtx {
   setStatus: (s: string) => void;
   /** Nach jedem Sprung (Suche, letzte Suche, Standort): z. B. prüfen, ob die Karte dort Daten hat. */
   afterJump?: (lng: number, lat: number) => void;
+  /** Rand für fitBounds, damit Kopfleiste und Panel nichts verdecken. */
+  padding?: () => maplibregl.PaddingOptions;
 }
 
 export type Camera =
@@ -26,9 +28,9 @@ export function placeCamera(p: Place): Camera {
   return { type: 'bounds', bounds: [[w, s], [e, n]], maxZoom };
 }
 
-export function jumpTo(map: maplibregl.Map, p: Place) {
+export function jumpTo(map: maplibregl.Map, p: Place, padding: number | maplibregl.PaddingOptions = 40) {
   const c = placeCamera(p);
-  if (c.type === 'bounds') map.fitBounds(c.bounds, { padding: 40, maxZoom: c.maxZoom, duration: 800 });
+  if (c.type === 'bounds') map.fitBounds(c.bounds, { padding, maxZoom: c.maxZoom, duration: 800 });
   else map.flyTo({ center: c.center, zoom: c.zoom, duration: 800 });
 }
 
@@ -88,7 +90,7 @@ export function initSearch(ctx: SearchCtx) {
 
   function go(p: Place) {
     arrive(`Karte: ${p.label}`, p.lng, p.lat);
-    jumpTo(map, p);
+    jumpTo(map, p, ctx.padding?.());
     if (p.name !== 'Koordinaten') remember(p);
   }
 
