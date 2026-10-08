@@ -4,3 +4,7 @@ public/*.pmtiles
 *.pmtiles
 .tmp
 test-results
+.firebase
+*.log
+goout.txt
+/strassenzeichner/
