@@ -23,13 +23,13 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); 
 #bar .right { display: flex; gap: 4px; }
 .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
 
-button, select, input[type='number'], input[type='url'] { font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+button, select, input[type='number'], input[type='url'], input[type='search'] { font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
 button:hover { border-color: var(--muted); }
 button:disabled { opacity: .4; cursor: default; }
 button.tool.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
 button.danger { color: var(--danger); border-color: var(--danger); }
-input[type='number'], input[type='url'], select { cursor: text; background: var(--bg); }
+input[type='number'], input[type='url'], input[type='search'], select { cursor: text; background: var(--bg); }
 select { cursor: pointer; }
 
 #panel { position: absolute; z-index: 4; top: 64px; right: 8px; bottom: 44px; width: 300px; overflow: auto; padding: 4px 12px 12px; background: var(--panel); backdrop-filter: blur(8px); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); transition: transform .2s; }
@@ -54,6 +54,20 @@ select { cursor: pointer; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 progress { width: 100%; accent-color: var(--accent); }
 
+.search { position: relative; display: flex; gap: 4px; flex: 0 1 320px; min-width: 0; }
+.search input { flex: 1; min-width: 0; }
+.search.busy button { opacity: .5; }
+.search-pop { position: absolute; top: calc(100% + 6px); left: 0; right: 0; min-width: 260px; padding: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
+.search-pop ul { list-style: none; margin: 0; padding: 0; }
+.search-pop li { display: flex; flex-direction: column; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.search-pop li small { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-pop li.on, .search-pop li:hover { background: var(--line); }
+.search-pop .hint { padding: 4px 8px 2px; }
+.search-pop a, .hint a { color: inherit; }
+.recent { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.recent button { padding: 3px 8px; font-size: 13px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#map-hint { position: absolute; z-index: 5; left: 50%; top: 70px; transform: translateX(-50%); max-width: calc(100% - 16px); padding: 6px 12px; background: var(--panel); border: 1px solid var(--danger); color: var(--ink); border-radius: 8px; box-shadow: var(--shadow); }
+
 #status { position: absolute; z-index: 5; left: 8px; bottom: 8px; max-width: calc(100% - 16px); padding: 4px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .maplibregl-ctrl-bottom-right, .maplibregl-ctrl-bottom-left { bottom: 34px; }
@@ -61,6 +75,10 @@ progress { width: 100%; accent-color: var(--accent); }
 @media (max-width: 720px) {
   #bar h1 { display: none; }
   #bar button span { display: none; }
+  #bar { flex-wrap: wrap; }
+  #bar .tools { flex: 1 1 auto; }
+  .search { order: 3; flex: 1 1 100%; }
+  #map-hint { top: 112px; }
   #panel { top: auto; left: 8px; right: 8px; width: auto; height: 46vh; bottom: 44px; }
   #panel.closed { transform: translateY(calc(100% + 60px)); }
 }

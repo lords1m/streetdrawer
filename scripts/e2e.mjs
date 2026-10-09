@@ -4,7 +4,8 @@ import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { makePdf, drawAlong } from './e2e-helpers.mjs';
+import { makePdf, drawAlong, findRoad, densify, mockNominatim } from './e2e-helpers.mjs';
+import { testTile } from './gen-test-tiles.mjs';
 
 const out = process.env.E2E_OUT || path.join(os.tmpdir(), 'sz-e2e');
 fs.mkdirSync(out, { recursive: true });
@@ -20,8 +21,16 @@ const base = (server.resolvedUrls ?? { local: ['http://localhost:5198/'] }).loca
 const results = [];
 const check = (name, ok, extra = '') => { results.push({ name, ok }); console.log(`${ok ? 'OK  ' : 'FAIL'} ${name} ${extra}`); };
 
-const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+// CHROMIUM_PATH: vorinstalliertes Chromium statt des zur Playwright-Version passenden
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
+// Weltkarte (OpenFreeMap) gesperrt: prüft den Fallback auf berlin.pmtiles; OpenFreeMap selbst prüft der letzte Block
+await ctx.route('https://tiles.openfreemap.org/**', (r) => r.abort());
+// Nominatim-Attrappe (Ziele liegen im Berlin-Ausschnitt 13.08,52.33,13.77,52.68 – außer Paris)
+const nominatim = await mockNominatim(ctx, {
+  'tempelhofer damm': [{ lat: '52.4840', lon: '13.3855', name: 'Tempelhofer Damm', display_name: 'Tempelhofer Damm, Tempelhof, Berlin, Deutschland', boundingbox: ['52.4820', '52.4860', '13.3835', '13.3875'], addresstype: 'road', place_rank: 26 }],
+  'paris': [{ lat: '48.8566', lon: '2.3522', name: 'Paris', display_name: 'Paris, Île-de-France, Frankreich', boundingbox: ['48.8155', '48.9021', '2.2241', '2.4697'], addresstype: 'city', place_rank: 12 }],
+});
 const page = await ctx.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e)));
@@ -30,41 +39,19 @@ page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 try {
   await page.goto(base);
   await page.waitForFunction(() => window.__sz && window.__sz.map.loaded(), null, { timeout: 60000 });
+  check('Weltkarte nicht erreichbar → Berlin-Fallback', (await page.evaluate(() => window.__sz.state.source.url)).endsWith('/berlin.pmtiles'), await page.textContent('#status'));
   await page.evaluate(() => { window.__sz.map.jumpTo({ center: [13.4132, 52.5219], zoom: 15.5 }); });
   await page.waitForFunction(() => window.__sz.netInfo.tiles && window.__sz.netInfo.tiles.includes('Segmente'), null, { timeout: 60000 });
   const info = await page.evaluate(() => window.__sz.netInfo.tiles);
   check('Straßennetz aus PMTiles aufgebaut', true, info);
 
   // Straße suchen: längste sichtbare Linie
-  const road = await page.evaluate(() => {
-    const m = window.__sz.map;
-    const ids = m.getStyle().layers.filter((l) => l['source-layer'] === 'roads' && l.type === 'line' && /major|highway|minor/.test(l.id) && !/casing/.test(l.id)).map((l) => l.id);
-    const feats = m.queryRenderedFeatures(undefined, { layers: ids });
-    let best = null, bl = 0;
-    for (const f of feats) {
-      const lines = f.geometry.type === 'LineString' ? [f.geometry.coordinates] : f.geometry.type === 'MultiLineString' ? f.geometry.coordinates : [];
-      for (const l of lines) {
-        const pts = l.map((c) => m.project(c));
-        const inside = pts.filter((p) => p.x > 360 && p.x < 1100 && p.y > 150 && p.y < 700);
-        if (inside.length < 3) continue;
-        let len = 0;
-        for (let i = 1; i < inside.length; i++) len += Math.hypot(inside[i].x - inside[i - 1].x, inside[i].y - inside[i - 1].y);
-        if (len > bl) { bl = len; best = inside.map((p) => [p.x, p.y]); }
-      }
-    }
-    return best;
-  });
+  const road = await findRoad(page);
   check('Straße im Ausschnitt gefunden', !!road && road.length >= 3);
   const rect = await page.evaluate(() => { const r = document.getElementById('map').getBoundingClientRect(); return [r.left, r.top]; });
 
   // Strich mit Rauschen zeichnen (±8 px)
-  let seed = 3; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 0xffffffff - 0.5; };
-  const dense = [];
-  for (let i = 1; i < road.length; i++) {
-    const [x0, y0] = road[i - 1], [x1, y1] = road[i];
-    const n = Math.max(1, Math.round(Math.hypot(x1 - x0, y1 - y0) / 6));
-    for (let k = 0; k < n; k++) dense.push([x0 + ((x1 - x0) * k) / n + rnd() * 16, y0 + ((y1 - y0) * k) / n + rnd() * 16]);
-  }
+  const dense = densify(road, 8);
   await page.mouse.move(rect[0] + dense[0][0], rect[1] + dense[0][1]);
   await page.mouse.down();
   let maxPreview = 0;
@@ -189,6 +176,73 @@ try {
   check('Strich rastet im PDF-Netz ein', (await page.evaluate(() => window.__sz.strokes.length)) === 3);
   await page.screenshot({ path: path.join(out, 'pdf-net.png') });
 
+  // ---------------- Ortssuche: Sprung, Weiterzeichnen am neuen Ort, Striche bleiben erhalten
+  await page.click('#import-clear');
+  await page.waitForFunction(() => document.getElementById('netsrc-import').disabled);
+  const snapshot = () => window.__sz.strokes.map((s) => s.parts.map((p) => Array.from(p).join(',')).join('|'));
+  const before = await page.evaluate(snapshot);
+  await page.fill('#search-q', 'Tempelhofer Damm');
+  await page.press('#search-q', 'Enter');
+  await page.waitForFunction(() => /Karte: Tempelhofer Damm/.test(document.getElementById('status').textContent), null, { timeout: 10000 });
+  const cam = await page.evaluate(() => { const m = window.__sz.map; return { c: m.getCenter(), z: m.getZoom() }; });
+  check('Suche springt zum Treffer', Math.abs(cam.c.lng - 13.3855) < 0.002 && Math.abs(cam.c.lat - 52.484) < 0.002 && cam.z > 15 && cam.z <= 16.01, `${cam.c.lng.toFixed(4)}, ${cam.c.lat.toFixed(4)} z${cam.z.toFixed(2)}`);
+  await page.evaluate(() => window.__sz.refreshNet());
+  await page.waitForTimeout(500);
+  const road2 = await findRoad(page);
+  if (!road2) throw new Error('keine Straße am Suchziel');
+  const dense2 = densify(road2, 6, 17);
+  await page.mouse.move(rect[0] + dense2[0][0], rect[1] + dense2[0][1]);
+  await page.mouse.down();
+  for (const [x, y] of dense2) await page.mouse.move(rect[0] + x, rect[1] + y);
+  await page.mouse.up();
+  await page.waitForFunction((n) => window.__sz.strokes.length === n + 1, before.length, { timeout: 10000 });
+  const after = await page.evaluate(snapshot);
+  check('Strich am neuen Ort rastet ein', after.length === before.length + 1, `Striche ${after.length}`);
+  check('Alte Striche nach dem Sprung unverändert', before.every((s, i) => s === after[i]));
+
+  // Ziel außerhalb der aktiven Karte: Hinweis, Export im Ausschnitt leer, Striche bleiben
+  await page.fill('#search-q', 'Paris');
+  await page.press('#search-q', 'Enter');
+  await page.waitForFunction(() => /Karte: Paris/.test(document.getElementById('status').textContent), null, { timeout: 10000 });
+  check('Hinweis „keine Daten“ außerhalb der Karte', await page.isVisible('#map-hint'), await page.textContent('#map-hint'));
+  await page.click('#ex-png');
+  check('Export ohne Striche im Ausschnitt meldet das', /nichts zu exportieren/.test(await page.textContent('#status')));
+  check('Striche nach Sprung nach Paris erhalten', (await page.evaluate(() => window.__sz.strokes.length)) === after.length);
+
+  // Koordinaten ohne Netzabfrage, URL-Hash
+  const nCalls = nominatim.length;
+  await page.fill('#search-q', '52.52, 13.40');
+  await page.press('#search-q', 'Enter');
+  await page.waitForFunction(() => /Karte: 52\.52000, 13\.40000/.test(document.getElementById('status').textContent), null, { timeout: 10000 });
+  check('Koordinaten springen ohne Nominatim-Anfrage', nominatim.length === nCalls && !(await page.isVisible('#map-hint')), `Anfragen: ${nominatim.join(' / ')}`);
+  const hash = await page.evaluate(() => location.hash);
+  check('URL-Hash enthält die Position', /^#[\d.]+\/52\.52\d*\/13\.4/.test(hash), hash);
+
+  // Zur Zeichnung springen: alle Striche im Bild
+  await page.click('#jump-drawing');
+  await page.waitForTimeout(1200);
+  // sichtbar = im Kartenbild, nicht unter Kopfleiste oder offenem Panel
+  const allVisible = await page.evaluate(() => {
+    const m = window.__sz.map, c = m.getContainer();
+    const top = document.getElementById('bar').getBoundingClientRect().bottom;
+    const panel = document.getElementById('panel');
+    const right = panel.classList.contains('closed') ? c.clientWidth : panel.getBoundingClientRect().left;
+    return window.__sz.strokes.every((s) => s.parts.every((p) => {
+      for (let i = 0; i < p.length; i += 2) { const q = m.project([p[i], p[i + 1]]); if (q.x < 0 || q.x > right || q.y < top || q.y > c.clientHeight) return false; }
+      return true;
+    }));
+  });
+  check('„Zur Zeichnung springen“ zeigt alle Striche (nicht verdeckt)', allVisible);
+
+  // Neuladen: Zeichnung und Ansicht bleiben
+  const nStrokes = await page.evaluate(() => window.__sz.strokes.length);
+  await page.waitForTimeout(700);   // entprelltes Speichern abwarten
+  await page.reload();
+  await page.waitForFunction(() => window.__sz && window.__sz.map.loaded(), null, { timeout: 60000 });
+  await page.waitForFunction((n) => window.__sz.strokes.length === n, nStrokes, { timeout: 5000 }).catch(() => {});
+  check('Zeichnung übersteht Neuladen', (await page.evaluate(() => window.__sz.strokes.length)) === nStrokes, await page.textContent('#status'));
+  await page.screenshot({ path: path.join(out, 'search.png') });
+
   // Dunkelmodus
   await page.click('#theme');
   await page.waitForTimeout(1500);
@@ -199,6 +253,52 @@ try {
   await page.setViewportSize({ width: 390, height: 760 });
   await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(out, 'mobile.png') });
+
+  // ---------------- Weltkarte von OpenFreeMap (nachgebildet: TileJSON + Kacheln im OpenMapTiles-Schema), Paris
+  {
+    const ctx2 = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const TJ = 'https://tiles.openfreemap.org/planet';
+    await ctx2.route(TJ, (r) => r.fulfill({ json: {
+      tilejson: '3.0.0', tiles: [TJ + '/e2e/{z}/{x}/{y}.pbf'], minzoom: 0, maxzoom: 14,
+      bounds: [-180, -85.0511, 180, 85.0511], vector_layers: [{ id: 'transportation', fields: { class: 'String' } }],
+    }, headers: { 'Access-Control-Allow-Origin': '*' } }));
+    let tileRequests = 0;
+    await ctx2.route(TJ + '/e2e/**', (r) => {
+      tileRequests++;
+      const z = Number(new URL(r.request().url()).pathname.split('/').at(-3));
+      const t = testTile(z, 'openmaptiles');
+      r.fulfill(t ? { body: t, contentType: 'application/x-protobuf', headers: { 'Access-Control-Allow-Origin': '*' } } : { status: 204, headers: { 'Access-Control-Allow-Origin': '*' } });
+    });
+    await ctx2.route('https://tiles.openfreemap.org/fonts/**', (r) => r.abort());
+    const p2 = await ctx2.newPage();
+    p2.on('pageerror', (e) => errors.push(String(e)));
+    p2.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    await p2.goto(base + '#15.5/48.8566/2.3522');
+    await p2.waitForFunction(() => window.__sz && window.__sz.map.loaded(), null, { timeout: 60000 });
+    const src = await p2.evaluate(() => window.__sz.state.source);
+    check('Weltkarte von OpenFreeMap geladen', src.url === TJ && src.schema === 'openmaptiles', JSON.stringify(src));
+    await p2.waitForFunction(() => window.__sz.netInfo.tiles && window.__sz.netInfo.tiles.includes('Segmente'), null, { timeout: 60000 });
+    check('Straßennetz aus OpenMapTiles-Kacheln (Paris)', !(await p2.isVisible('#map-hint')) && tileRequests > 0, `${await p2.evaluate(() => window.__sz.netInfo.tiles)}, ${tileRequests} Kacheln`);
+    const roadP = await findRoad(p2);
+    if (!roadP) throw new Error('keine Straße in den OpenMapTiles-Kacheln');
+    const denseP = densify(roadP, 6, 29);
+    await p2.mouse.move(denseP[0][0], denseP[0][1]);
+    await p2.mouse.down();
+    for (const [x, y] of denseP) await p2.mouse.move(x, y);
+    await p2.mouse.up();
+    await p2.waitForFunction(() => window.__sz.strokes.length === 1, null, { timeout: 10000 });
+    const devP = await p2.evaluate((road) => {
+      const m = window.__sz.map;
+      const pts = window.__sz.strokes[0].parts.flatMap((p) => { const o = []; for (let i = 0; i < p.length; i += 2) o.push(m.project([p[i], p[i + 1]])); return o; });
+      const seg = (p, a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1]; const l2 = dx * dx + dy * dy; let t = l2 ? ((p.x - a[0]) * dx + (p.y - a[1]) * dy) / l2 : 0; t = Math.max(0, Math.min(1, t)); return Math.hypot(p.x - (a[0] + t * dx), p.y - (a[1] + t * dy)); };
+      let worst = 0;
+      for (const p of pts) { let best = Infinity; for (let i = 1; i < road.length; i++) best = Math.min(best, seg(p, road[i - 1], road[i])); worst = Math.max(worst, best); }
+      return { n: pts.length, worst };
+    }, roadP);
+    check('Strich rastet auf OpenFreeMap-Straße ein', devP.n >= 2 && devP.worst < 14, `Punkte ${devP.n}, max. Abstand ${devP.worst.toFixed(2)} px`);
+    await p2.screenshot({ path: path.join(out, 'openfreemap.png') });
+    await ctx2.close();
+  }
 
   check('Keine Konsolenfehler', errors.filter((e) => !/glyph|sprite|Failed to load resource|Could not compile fragment shader|protomaps\.github\.io/i.test(e)).length === 0, errors.slice(0, 3).join(' | '));
 } catch (e) {

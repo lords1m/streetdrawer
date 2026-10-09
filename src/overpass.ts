@@ -1,5 +1,6 @@
 import type { LineBatch } from './core/types';
 import { classifyHighway } from './import/sink';
+import { optionalStore, type KvStore } from './idb';
 
 /**
  * Overpass-Ergänzung für kleine Ausschnitte bei hohem Zoom.
@@ -19,7 +20,7 @@ export interface OverpassDeps {
   sleep?: (ms: number) => Promise<void>;
   minGapMs?: number;
   now?: () => number;
-  store?: { get(k: string): Promise<OverpassTile | undefined>; set(k: string, v: OverpassTile): Promise<void> };
+  store?: KvStore<OverpassTile>;
   onStatus?: (s: string) => void;
 }
 
@@ -74,37 +75,6 @@ export function tilesToBatch(tiles: OverpassTile[]): LineBatch | null {
   return { coords, offsets, cls, kind: 'lnglat' };
 }
 
-function idbStore() {
-  const open = () => new Promise<IDBDatabase>((res, rej) => {
-    const r = indexedDB.open('strassenzeichner', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('overpass');
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
-  });
-  return {
-    async get(k: string) {
-      try {
-        const db = await open();
-        return await new Promise<OverpassTile | undefined>((res) => {
-          const q = db.transaction('overpass').objectStore('overpass').get(k);
-          q.onsuccess = () => res(q.result as OverpassTile | undefined);
-          q.onerror = () => res(undefined);
-        });
-      } catch { return undefined; }
-    },
-    async set(k: string, v: OverpassTile) {
-      try {
-        const db = await open();
-        await new Promise<void>((res) => {
-          const tx = db.transaction('overpass', 'readwrite');
-          tx.objectStore('overpass').put(v, k);
-          tx.oncomplete = () => res(); tx.onerror = () => res();
-        });
-      } catch { /* Cache ist optional */ }
-    },
-  };
-}
-
 export class OverpassClient {
   private mem = new Map<string, OverpassTile>();
   /** Fehlgeschlagene Tiles: nicht vor diesem Zeitpunkt erneut abfragen (Nutzungsrichtlinie). */
@@ -120,7 +90,7 @@ export class OverpassClient {
       sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
       minGapMs: deps.minGapMs ?? 2500,
       now: deps.now ?? (() => Date.now()),
-      store: deps.store ?? (typeof indexedDB !== 'undefined' ? idbStore() : undefined),
+      store: deps.store ?? optionalStore<OverpassTile>('overpass'),
       onStatus: deps.onStatus,
     };
   }

@@ -22,6 +22,15 @@
         <button id="undo" title="Rückgängig (Strg+Z)">↶</button>
         <button id="redo" title="Wiederholen (Strg+Y)">↷</button>
       </div>
+      <form id="search" class="search" role="search" autocomplete="off">
+        <input type="search" id="search-q" placeholder="Adresse, Ort, Land, PLZ oder 52.52, 13.40" aria-label="Ort suchen"
+          role="combobox" aria-expanded="false" aria-controls="search-list" aria-autocomplete="list" enterkeyhint="search" spellcheck="false" />
+        <button type="submit" id="search-go" title="Suchen (Enter)" aria-label="Suchen">🔍</button>
+        <div id="search-pop" class="search-pop" hidden>
+          <ul id="search-list" role="listbox" aria-label="Suchtreffer"></ul>
+          <p class="hint">Suche: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap-Mitwirkende</a> (Nominatim)</p>
+        </div>
+      </form>
       <div class="right">
         <button id="theme" title="Hell/Dunkel">◐</button>
         <button id="panel-toggle" title="Einstellungen">☰</button>
@@ -29,6 +38,16 @@
     </header>
 
     <aside id="panel" aria-label="Einstellungen">
+      <section>
+        <h2>Ort</h2>
+        <div class="two"><button id="locate" title="Karte auf den eigenen Standort setzen">📍 Mein Standort</button><button id="jump-drawing" title="Karte so einstellen, dass alle Striche sichtbar sind" disabled>Zur Zeichnung springen</button></div>
+        <div id="recent-wrap" hidden>
+          <p class="hint">Letzte Suchen</p>
+          <ul id="recent" class="recent"></ul>
+        </div>
+        <p class="hint">Suchtext geht an Nominatim (OpenStreetMap). Striche bleiben beim Ortswechsel erhalten.</p>
+      </section>
+
       <section>
         <h2>Stift</h2>
         <div id="swatches" class="swatches"></div>
@@ -69,10 +88,10 @@
 
       <section>
         <h2>Karte</h2>
-        <label class="row col">PMTiles-URL (Protomaps-Schema)
-          <span class="inline"><input type="url" id="pm-url" placeholder="https://…/stadt.pmtiles" /><button id="pm-load">Laden</button></span>
+        <label class="row col">Eigene Karte (.pmtiles oder TileJSON)
+          <span class="inline"><input type="url" id="pm-url" placeholder="leer = OpenFreeMap-Weltkarte" /><button id="pm-load">Laden</button></span>
         </label>
-        <label class="check"><input type="checkbox" id="labels" checked /> Beschriftung (lädt Schriften von protomaps.github.io)</label>
+        <label class="check"><input type="checkbox" id="labels" checked /> Beschriftung (lädt Schriften vom Kartenanbieter)</label>
       </section>
 
       <section>
@@ -86,9 +105,11 @@
           </select>
         </label>
         <div class="two"><button id="ex-png" class="primary">PNG</button><button id="ex-svg" class="primary">SVG</button></div>
+        <p class="hint">Exportiert werden die Striche im sichtbaren Kartenausschnitt.</p>
       </section>
     </aside>
 
+    <div id="map-hint" role="alert" hidden>Hier gibt es in der gewählten Karte keine Daten.</div>
     <footer id="status" role="status"></footer>
   </div>
 

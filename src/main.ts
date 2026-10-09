@@ -7,11 +7,16 @@ import { CLASS_MAIN, CLASS_PATH, CLASS_STREET } from './core/graph';
 import { metersPerPixel } from './core/geo';
 import { GrowF64, GrowU32 } from './core/grow';
 import type { LineBatch, Slot, Stroke } from './core/types';
-import { exportPng, exportSvg } from './export';
-import { kindToClass, makeStyle, roadLayerIds, type Theme } from './map-style';
+import { exportPng, exportSvg, strokesBounds } from './export';
+import { BASE_SOURCE, makeStyle, roadClass, roadLayerIds, roadLevel, sourceFor, type MapSource, type Theme } from './map-style';
 import { NetClient } from './net-client';
 import { eraseStrokes } from './erase';
 import { initImport } from './import-ui';
+import { initSearch } from './search-ui';
+import { DEFAULT_VIEW, FALLBACK_PMTILES_FILE, PROBE_TIMEOUT_MS, WORLD_TILES_URL } from './config';
+import { chooseSource, covers, probeSource, type TileBounds } from './tile-source';
+import { loadPref, savePref } from './prefs';
+import { drawingStore } from './persist';
 
 // ---------------------------------------------------------------- Zustand
 type Tool = 'pen' | 'eraser' | 'pan';
@@ -28,7 +33,7 @@ export const state = {
   theme: (localStorage.getItem('sz-theme') as Theme | null) ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
   labels: true,
   showNet: false,
-  pmtilesUrl: new URL('berlin.pmtiles', location.href).toString(),
+  source: null as unknown as MapSource,   // wird vor dem Kartenstart gesetzt
   overpass: false,
   thin: true,
 };
@@ -48,13 +53,33 @@ const protocol = new Protocol();
 maplibregl.addProtocol('pmtiles', protocol.tile);
 const net = new NetClient();
 
+// Kartenquelle: eigene Überschreibung → Weltkarte (OpenFreeMap, freie OSM-Daten) → berlin.pmtiles neben der App
+const FALLBACK = sourceFor(new URL(FALLBACK_PMTILES_FILE, location.href).toString());
+const WORLD = sourceFor(WORLD_TILES_URL);
+const override = loadPref<string | null>('pmtiles', null);
+setStatus('Karte wird geprüft …');
+const start = await chooseSource([...(override ? [sourceFor(override)] : []), WORLD, FALLBACK], PROBE_TIMEOUT_MS, protocol);
+state.source = start.source;
+/** Ausdehnung der aktiven Quelle (Header bzw. TileJSON); null = unbekannt/überall. */
+let tileBounds: TileBounds | null = start.bounds;
+const isFallback = (s: MapSource) => s.url === FALLBACK.url;
+const startMsg = override && start.index > 0
+  ? `Eigene Karte nicht erreichbar – ${isFallback(start.source) ? 'Berlin-Karte' : 'Weltkarte'} geladen`
+  : isFallback(start.source) ? 'Weltkarte nicht erreichbar – Berlin-Karte geladen' : '';
+
 document.documentElement.dataset.theme = state.theme;
+
+const savedView = loadPref<{ center: [number, number]; zoom: number } | null>('view', null);
+const lastView = savedView && Array.isArray(savedView.center) && savedView.center.every(Number.isFinite) && Number.isFinite(savedView.zoom)
+  ? savedView : DEFAULT_VIEW;
 
 const map = new maplibregl.Map({
   container: 'map',
-  style: makeStyle(state.theme, state.pmtilesUrl, state.labels),
-  center: [13.405, 52.52],
-  zoom: 13,
+  style: makeStyle(state.theme, state.source, state.labels),
+  // Startansicht: URL-Hash (#zoom/lat/lng, setzt MapLibre selbst) → letzte Position → Berlin
+  center: lastView.center,
+  zoom: lastView.zoom,
+  hash: true,
   maxZoom: 19,
   maxPitch: 0,
   dragRotate: false,
@@ -63,6 +88,13 @@ const map = new maplibregl.Map({
   attributionControl: { compact: true },
   fadeDuration: 0,
 });
+// letzte Position merken – auch die aus dem URL-Hash, die MapLibre schon im Konstruktor anspringt
+const saveView = () => {
+  const c = map.getCenter();
+  savePref('view', { center: [+c.lng.toFixed(6), +c.lat.toFixed(6)], zoom: +map.getZoom().toFixed(2) });
+};
+map.on('moveend', saveView);
+map.once('load', saveView);
 map.touchZoomRotate.disableRotation();
 map.keyboard.disableRotation();
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
@@ -137,10 +169,10 @@ function collectTileNetwork(): LineBatch | null {
     cls.push(c); level.push(lv);
   };
   for (const f of feats) {
-    const c = kindToClass(f.properties?.kind);
-    if (c === null) continue;
     const p = f.properties ?? {};
-    const lv = p.is_bridge ? 1 : p.is_tunnel ? -1 : 0;
+    const c = roadClass(state.source.schema, p);
+    if (c === null) continue;
+    const lv = roadLevel(state.source.schema, p);
     const g = f.geometry;
     if (g.type === 'LineString') addLine(g.coordinates as number[][], c, lv);
     else if (g.type === 'MultiLineString') for (const l of g.coordinates as number[][][]) addLine(l, c, lv);
@@ -161,7 +193,7 @@ async function refreshNet(force = false) {
   if (drawing) { refreshPending = true; return; }   // nach dem Strich nachholen
   if (netBusy || !map.loaded()) { scheduleNetRefresh(300); return; }
   const c = map.getCenter();
-  const key = `${c.lng.toFixed(5)},${c.lat.toFixed(5)},${map.getZoom().toFixed(2)},${map.getCanvas().width},${state.pmtilesUrl},${extraLines?.cls.length ?? 0}`;
+  const key = `${c.lng.toFixed(5)},${c.lat.toFixed(5)},${map.getZoom().toFixed(2)},${map.getCanvas().width},${state.source.url},${extraLines?.cls.length ?? 0}`;
   if (!force && key === netKey) return;
   const batch = collectTileNetwork();
   netKey = key;
@@ -447,19 +479,34 @@ function finishErase() {
 }
 
 // ---------------------------------------------------------------- Verlauf
+const drawingDb = drawingStore();
+const persist = () => drawingDb.save(strokes, nextStrokeId);
+window.addEventListener('pagehide', () => drawingDb.flush());
+
 function commit(next: Stroke[]) {
   strokes = next;
   history = history.slice(0, histIdx + 1);
   history.push(strokes);
   if (history.length > 200) history.shift();
   histIdx = history.length - 1;
-  refreshStrokes(); updateButtons();
+  refreshStrokes(); updateButtons(); persist();
 }
-function undo() { if (histIdx > 0) { histIdx--; strokes = history[histIdx]; refreshStrokes(); updateButtons(); } }
-function redo() { if (histIdx < history.length - 1) { histIdx++; strokes = history[histIdx]; refreshStrokes(); updateButtons(); } }
+function undo() { if (histIdx > 0) { histIdx--; strokes = history[histIdx]; refreshStrokes(); updateButtons(); persist(); } }
+function redo() { if (histIdx < history.length - 1) { histIdx++; strokes = history[histIdx]; refreshStrokes(); updateButtons(); persist(); } }
+
+// Gespeicherte Zeichnung übernehmen – nur wenn seit dem Start noch nichts gezeichnet wurde
+void drawingDb.load().then((d) => {
+  if (!d || !d.strokes.length || history.length > 1 || strokes.length) return;
+  strokes = d.strokes;
+  history = [strokes]; histIdx = 0;
+  nextStrokeId = Math.max(nextStrokeId, d.nextStrokeId, ...strokes.map((s) => s.id + 1));
+  refreshStrokes(); updateButtons();
+  setStatus(`${strokes.length} ${strokes.length === 1 ? 'Strich' : 'Striche'} aus der letzten Sitzung wiederhergestellt`);
+});
 function updateButtons() {
   ($('undo') as HTMLButtonElement).disabled = histIdx === 0;
   ($('redo') as HTMLButtonElement).disabled = histIdx === history.length - 1;
+  ($('jump-drawing') as HTMLButtonElement).disabled = strokes.length === 0;
   setStatus(`${strokes.length} ${strokes.length === 1 ? 'Strich' : 'Striche'}`);
 }
 
@@ -509,7 +556,7 @@ function applyTheme(t: Theme, reload = true) {
   state.theme = t;
   document.documentElement.dataset.theme = t;
   try { localStorage.setItem('sz-theme', t); } catch { /* ignore */ }
-  if (reload) map.setStyle(makeStyle(t, state.pmtilesUrl, state.labels), { diff: false });
+  if (reload) map.setStyle(makeStyle(t, state.source, state.labels), { diff: false });
   if (state.showNet) void showNetOverlay();
 }
 $('theme').addEventListener('click', () => applyTheme(state.theme === 'dark' ? 'light' : 'dark'));
@@ -518,28 +565,88 @@ if (matchMedia('(max-width: 720px)').matches) $('panel').classList.add('closed')
 
 $('labels').addEventListener('change', (e) => {
   state.labels = (e.target as HTMLInputElement).checked;
-  map.setStyle(makeStyle(state.theme, state.pmtilesUrl, state.labels), { diff: false });
+  map.setStyle(makeStyle(state.theme, state.source, state.labels), { diff: false });
 });
-$('pm-load').addEventListener('click', () => {
-  const v = ($('pm-url') as HTMLInputElement).value.trim();
-  if (!v) return;
-  state.pmtilesUrl = new URL(v, location.href).toString();
-  map.setStyle(makeStyle(state.theme, state.pmtilesUrl, state.labels), { diff: false });
-  setStatus('Karte: ' + state.pmtilesUrl);
+// ---------------------------------------------------------------- Kartenquelle wechseln
+function setSource(src: MapSource, bounds: TileBounds | null) {
+  state.source = src;
+  tileBounds = bounds;
+  map.setStyle(makeStyle(state.theme, src, state.labels), { diff: false });
+  checkCoverage();
+}
+
+const pmUrl = $('pm-url') as HTMLInputElement;
+pmUrl.value = override ?? '';
+// Eigene URL laden; leeres Feld setzt auf die Standardkarte zurück
+$('pm-load').addEventListener('click', async () => {
+  const v = pmUrl.value.trim();
+  const url = v ? new URL(v, location.href).toString() : null;
+  setStatus('Karte wird geprüft …');
+  const r = await chooseSource(url ? [sourceFor(url)] : [WORLD, FALLBACK], PROBE_TIMEOUT_MS, protocol);
+  if (url && !r.ok) { setStatus('Karte nicht erreichbar (CORS/Range-Requests?): ' + url); return; }
+  savePref('pmtiles', url);
+  setSource(r.source, r.bounds);
+  setStatus(url ? 'Karte: ' + r.source.url : isFallback(r.source) ? 'Weltkarte nicht erreichbar – Berlin-Karte geladen' : 'Weltkarte geladen');
 });
+
+// Fällt die Quelle zur Laufzeit aus: Header/TileJSON neu lesen und nur wenn das scheitert einmal auf Berlin wechseln
+// (einzelne Kachelfehler sind meist vorübergehend)
+let reprobing = false;
+map.on('error', (e) => {
+  if ((e as { sourceId?: string }).sourceId !== BASE_SOURCE || reprobing || isFallback(state.source)) return;
+  reprobing = true;
+  const src = state.source;
+  void probeSource(src, PROBE_TIMEOUT_MS).then(async (r) => {
+    if (!r.ok && state.source === src) {
+      const fb = await probeSource(FALLBACK, PROBE_TIMEOUT_MS, protocol);
+      setSource(FALLBACK, fb.bounds);
+      setStatus('Karte nicht mehr erreichbar – Berlin-Karte geladen');
+    }
+  }).finally(() => { reprobing = false; });
+});
+
+// Hinweis, wenn die Kartenmitte außerhalb der aktiven Datei liegt (z. B. Berlin-Fallback und Ziel Paris)
+const mapHint = $('map-hint');
+function checkCoverage() {
+  const c = map.getCenter();
+  mapHint.hidden = covers(tileBounds, c.lng, c.lat);
+}
+map.on('moveend', checkCoverage);
 $('shownet').addEventListener('change', (e) => { state.showNet = (e.target as HTMLInputElement).checked; void showNetOverlay(); });
 document.querySelectorAll<HTMLInputElement>('input[name=netsrc]').forEach((r) => r.addEventListener('change', () => {
   state.netSlot = r.value as Slot; updateNetInfo(); if (state.showNet) void showNetOverlay();
 }));
 
+/** Rand für fitBounds: Kopfleiste oben, offenes Panel rechts (Desktop) bzw. unten (Handy). */
+function viewPadding(): maplibregl.PaddingOptions {
+  const pad = { top: $('bar').getBoundingClientRect().bottom + 16, bottom: 50, left: 40, right: 40 };
+  const panel = $('panel');
+  if (!panel.classList.contains('closed')) {
+    if (matchMedia('(max-width: 720px)').matches) pad.bottom = Math.max(pad.bottom, panel.offsetHeight + 60);
+    else pad.right = panel.offsetWidth + 32;
+  }
+  // bei sehr kleinen Fenstern nicht mehr Rand als Karte
+  const c = map.getContainer();
+  if (pad.left + pad.right > c.clientWidth * 0.8) pad.left = pad.right = 20;
+  if (pad.top + pad.bottom > c.clientHeight * 0.8) { pad.top = Math.min(pad.top, 80); pad.bottom = 20; }
+  return pad;
+}
+
+// Striche an mehreren Orten wiederfinden
+$('jump-drawing').addEventListener('click', () => {
+  const b = strokesBounds(strokes);
+  if (b) map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: viewPadding(), maxZoom: 17, duration: 800 });
+});
+
 $('ex-png').addEventListener('click', () => void doExport('png'));
 $('ex-svg').addEventListener('click', () => void doExport('svg'));
 async function doExport(kind: 'png' | 'svg') {
+  const b = map.getBounds();
   const o = {
     width: Number(($('ex-width') as HTMLInputElement).value) || 2000,
-    padding: 0.06,
     background: ($('ex-bg') as HTMLSelectElement).value,
     zoom: map.getZoom(),
+    view: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] as [number, number, number, number],
   };
   try {
     if (kind === 'png') await exportPng(strokes, o); else exportSvg(strokes, o);
@@ -563,6 +670,9 @@ initImport({
   },
 });
 
+// Ortssuche, letzte Suchen, Standort
+const search = initSearch({ map, setStatus, padding: viewPadding });
+
 // Absturz des Netz-Workers: Kartennetz neu aufbauen, Import-Netz ist verloren
 net.onRestart = (reason) => {
   netBusy = false; netKey = '';
@@ -574,7 +684,8 @@ net.onRestart = (reason) => {
 setTool('pen');
 resizeRaw();
 updateButtons();
-setStatus('Karte lädt …');
+setStatus(startMsg || 'Karte lädt …');
+checkCoverage();
 map.on('zoomend', () => { if (!drawing) setStatus(`${strokes.length} Striche · Zoom ${map.getZoom().toFixed(1)}`); });
 
 // Testschnittstelle für Playwright
@@ -584,4 +695,6 @@ map.on('zoomend', () => { if (!drawing) setStatus(`${strokes.length} Striche · 
   get lastMs() { return lastMs; },
   get netInfo() { return netInfo; },
   refreshNet: () => refreshNet(true),
+  search,
+  get tileBounds() { return tileBounds; },
 };
