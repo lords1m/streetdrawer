@@ -42,7 +42,7 @@ export async function drawAlong(page, rect, ll, noisePx) {
 export async function findRoad(page, box = [360, 150, 1100, 700]) {
   return page.evaluate((box) => {
     const m = window.__sz.map;
-    const ids = m.getStyle().layers.filter((l) => l['source-layer'] === 'roads' && l.type === 'line' && /major|highway|minor/.test(l.id) && !/casing/.test(l.id)).map((l) => l.id);
+    const ids = m.getStyle().layers.filter((l) => (l['source-layer'] === 'roads' || l['source-layer'] === 'transportation') && l.type === 'line' && /major|highway|minor/.test(l.id) && !/casing/.test(l.id)).map((l) => l.id);
     const feats = m.queryRenderedFeatures(undefined, { layers: ids });
     let best = null, bl = 0;
     for (const f of feats) {

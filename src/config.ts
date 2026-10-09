@@ -1,17 +1,16 @@
 /**
  * Konfiguration der Kartenquelle.
- * Die Welt-.pmtiles liegt in einem öffentlichen Cloud-Storage-Bucket (Firebase Hosting erlaubt höchstens 2 GB pro
- * Datei); Einrichtung: scripts/setup-world-tiles.sh. Der Dateiname trägt das Build-Datum: ein neuer Build bekommt eine
- * neue URL, damit Clients mit gecachtem Header keine ETag-Konflikte sehen.
- * Überschreiben beim Bauen: VITE_WORLD_PMTILES_URL=https://… npm run build
+ * Standard ist OpenFreeMap: freie OpenStreetMap-Vektorkacheln der ganzen Welt (OpenMapTiles-Schema), ohne Schlüssel,
+ * ohne Anmeldung, ohne Nutzungsgrenzen und ohne Kosten; Bedingung ist die Namensnennung (steht in der Kartenecke).
+ * https://openfreemap.org
+ * Überschreiben beim Bauen: VITE_WORLD_TILES_URL=https://… npm run build (TileJSON-URL oder .pmtiles-Datei)
  */
-export const WORLD_PMTILES_URL: string =
-  import.meta.env.VITE_WORLD_PMTILES_URL || 'https://storage.googleapis.com/strassenzeichner-tiles/planet-20261001.pmtiles';
+export const WORLD_TILES_URL: string = import.meta.env.VITE_WORLD_TILES_URL || 'https://tiles.openfreemap.org/planet';
 
-/** Schneller Start und Fallback: liegt neben der App auf Firebase Hosting. */
+/** Schneller Start und Fallback (OSM-Daten aus dem Protomaps-Build): liegt neben der App auf Firebase Hosting. */
 export const FALLBACK_PMTILES_FILE = 'berlin.pmtiles';
 
-/** So lange darf das Lesen des Headers beim Start dauern, bevor auf den Fallback gewechselt wird. */
+/** So lange darf die Prüfung der Kartenquelle beim Start dauern, bevor auf den Fallback gewechselt wird. */
 export const PROBE_TIMEOUT_MS = 5000;
 
 /** Startansicht ohne URL-Hash und ohne gespeicherte Position. */

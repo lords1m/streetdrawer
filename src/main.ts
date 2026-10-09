@@ -8,13 +8,13 @@ import { metersPerPixel } from './core/geo';
 import { GrowF64, GrowU32 } from './core/grow';
 import type { LineBatch, Slot, Stroke } from './core/types';
 import { exportPng, exportSvg, strokesBounds } from './export';
-import { BASE_SOURCE, kindToClass, makeStyle, roadLayerIds, type Theme } from './map-style';
+import { BASE_SOURCE, makeStyle, roadClass, roadLayerIds, roadLevel, sourceFor, type MapSource, type Theme } from './map-style';
 import { NetClient } from './net-client';
 import { eraseStrokes } from './erase';
 import { initImport } from './import-ui';
 import { initSearch } from './search-ui';
-import { DEFAULT_VIEW, FALLBACK_PMTILES_FILE, PROBE_TIMEOUT_MS, WORLD_PMTILES_URL } from './config';
-import { chooseSource, covers, probeTiles, type TileBounds } from './tile-source';
+import { DEFAULT_VIEW, FALLBACK_PMTILES_FILE, PROBE_TIMEOUT_MS, WORLD_TILES_URL } from './config';
+import { chooseSource, covers, probeSource, type TileBounds } from './tile-source';
 import { loadPref, savePref } from './prefs';
 import { drawingStore } from './persist';
 
@@ -33,7 +33,7 @@ export const state = {
   theme: (localStorage.getItem('sz-theme') as Theme | null) ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
   labels: true,
   showNet: false,
-  pmtilesUrl: '',
+  source: null as unknown as MapSource,   // wird vor dem Kartenstart gesetzt
   overpass: false,
   thin: true,
 };
@@ -53,17 +53,19 @@ const protocol = new Protocol();
 maplibregl.addProtocol('pmtiles', protocol.tile);
 const net = new NetClient();
 
-// Kartenquelle: eigene Überschreibung → Weltkarte (Cloud Storage) → berlin.pmtiles neben der App
-const FALLBACK_URL = new URL(FALLBACK_PMTILES_FILE, location.href).toString();
+// Kartenquelle: eigene Überschreibung → Weltkarte (OpenFreeMap, freie OSM-Daten) → berlin.pmtiles neben der App
+const FALLBACK = sourceFor(new URL(FALLBACK_PMTILES_FILE, location.href).toString());
+const WORLD = sourceFor(WORLD_TILES_URL);
 const override = loadPref<string | null>('pmtiles', null);
 setStatus('Karte wird geprüft …');
-const start = await chooseSource([...(override ? [override] : []), WORLD_PMTILES_URL, FALLBACK_URL], PROBE_TIMEOUT_MS, protocol);
-state.pmtilesUrl = start.url;
-/** Ausdehnung der aktiven Datei (Header); null = unbekannt/überall. */
+const start = await chooseSource([...(override ? [sourceFor(override)] : []), WORLD, FALLBACK], PROBE_TIMEOUT_MS, protocol);
+state.source = start.source;
+/** Ausdehnung der aktiven Quelle (Header bzw. TileJSON); null = unbekannt/überall. */
 let tileBounds: TileBounds | null = start.bounds;
+const isFallback = (s: MapSource) => s.url === FALLBACK.url;
 const startMsg = override && start.index > 0
-  ? `Eigene Karte nicht erreichbar – ${start.url === FALLBACK_URL ? 'Berlin-Karte' : 'Weltkarte'} geladen`
-  : start.url === FALLBACK_URL ? 'Weltkarte nicht erreichbar – Berlin-Karte geladen' : '';
+  ? `Eigene Karte nicht erreichbar – ${isFallback(start.source) ? 'Berlin-Karte' : 'Weltkarte'} geladen`
+  : isFallback(start.source) ? 'Weltkarte nicht erreichbar – Berlin-Karte geladen' : '';
 
 document.documentElement.dataset.theme = state.theme;
 
@@ -73,7 +75,7 @@ const lastView = savedView && Array.isArray(savedView.center) && savedView.cente
 
 const map = new maplibregl.Map({
   container: 'map',
-  style: makeStyle(state.theme, state.pmtilesUrl, state.labels),
+  style: makeStyle(state.theme, state.source, state.labels),
   // Startansicht: URL-Hash (#zoom/lat/lng, setzt MapLibre selbst) → letzte Position → Berlin
   center: lastView.center,
   zoom: lastView.zoom,
@@ -167,10 +169,10 @@ function collectTileNetwork(): LineBatch | null {
     cls.push(c); level.push(lv);
   };
   for (const f of feats) {
-    const c = kindToClass(f.properties?.kind);
-    if (c === null) continue;
     const p = f.properties ?? {};
-    const lv = p.is_bridge ? 1 : p.is_tunnel ? -1 : 0;
+    const c = roadClass(state.source.schema, p);
+    if (c === null) continue;
+    const lv = roadLevel(state.source.schema, p);
     const g = f.geometry;
     if (g.type === 'LineString') addLine(g.coordinates as number[][], c, lv);
     else if (g.type === 'MultiLineString') for (const l of g.coordinates as number[][][]) addLine(l, c, lv);
@@ -191,7 +193,7 @@ async function refreshNet(force = false) {
   if (drawing) { refreshPending = true; return; }   // nach dem Strich nachholen
   if (netBusy || !map.loaded()) { scheduleNetRefresh(300); return; }
   const c = map.getCenter();
-  const key = `${c.lng.toFixed(5)},${c.lat.toFixed(5)},${map.getZoom().toFixed(2)},${map.getCanvas().width},${state.pmtilesUrl},${extraLines?.cls.length ?? 0}`;
+  const key = `${c.lng.toFixed(5)},${c.lat.toFixed(5)},${map.getZoom().toFixed(2)},${map.getCanvas().width},${state.source.url},${extraLines?.cls.length ?? 0}`;
   if (!force && key === netKey) return;
   const batch = collectTileNetwork();
   netKey = key;
@@ -554,7 +556,7 @@ function applyTheme(t: Theme, reload = true) {
   state.theme = t;
   document.documentElement.dataset.theme = t;
   try { localStorage.setItem('sz-theme', t); } catch { /* ignore */ }
-  if (reload) map.setStyle(makeStyle(t, state.pmtilesUrl, state.labels), { diff: false });
+  if (reload) map.setStyle(makeStyle(t, state.source, state.labels), { diff: false });
   if (state.showNet) void showNetOverlay();
 }
 $('theme').addEventListener('click', () => applyTheme(state.theme === 'dark' ? 'light' : 'dark'));
@@ -563,13 +565,13 @@ if (matchMedia('(max-width: 720px)').matches) $('panel').classList.add('closed')
 
 $('labels').addEventListener('change', (e) => {
   state.labels = (e.target as HTMLInputElement).checked;
-  map.setStyle(makeStyle(state.theme, state.pmtilesUrl, state.labels), { diff: false });
+  map.setStyle(makeStyle(state.theme, state.source, state.labels), { diff: false });
 });
 // ---------------------------------------------------------------- Kartenquelle wechseln
-function setSource(url: string, bounds: TileBounds | null) {
-  state.pmtilesUrl = url;
+function setSource(src: MapSource, bounds: TileBounds | null) {
+  state.source = src;
   tileBounds = bounds;
-  map.setStyle(makeStyle(state.theme, url, state.labels), { diff: false });
+  map.setStyle(makeStyle(state.theme, src, state.labels), { diff: false });
   checkCoverage();
 }
 
@@ -580,24 +582,24 @@ $('pm-load').addEventListener('click', async () => {
   const v = pmUrl.value.trim();
   const url = v ? new URL(v, location.href).toString() : null;
   setStatus('Karte wird geprüft …');
-  const r = await chooseSource(url ? [url] : [WORLD_PMTILES_URL, FALLBACK_URL], PROBE_TIMEOUT_MS, protocol);
+  const r = await chooseSource(url ? [sourceFor(url)] : [WORLD, FALLBACK], PROBE_TIMEOUT_MS, protocol);
   if (url && !r.ok) { setStatus('Karte nicht erreichbar (CORS/Range-Requests?): ' + url); return; }
   savePref('pmtiles', url);
-  setSource(r.url, r.bounds);
-  setStatus(url ? 'Karte: ' + r.url : r.url === FALLBACK_URL ? 'Weltkarte nicht erreichbar – Berlin-Karte geladen' : 'Standardkarte geladen');
+  setSource(r.source, r.bounds);
+  setStatus(url ? 'Karte: ' + r.source.url : isFallback(r.source) ? 'Weltkarte nicht erreichbar – Berlin-Karte geladen' : 'Weltkarte geladen');
 });
 
-// Fällt die Quelle zur Laufzeit aus: Header neu lesen und nur wenn der scheitert einmal auf Berlin wechseln
+// Fällt die Quelle zur Laufzeit aus: Header/TileJSON neu lesen und nur wenn das scheitert einmal auf Berlin wechseln
 // (einzelne Kachelfehler sind meist vorübergehend)
 let reprobing = false;
 map.on('error', (e) => {
-  if ((e as { sourceId?: string }).sourceId !== BASE_SOURCE || reprobing || state.pmtilesUrl === FALLBACK_URL) return;
+  if ((e as { sourceId?: string }).sourceId !== BASE_SOURCE || reprobing || isFallback(state.source)) return;
   reprobing = true;
-  const url = state.pmtilesUrl;
-  void probeTiles(url, PROBE_TIMEOUT_MS).then(async (r) => {
-    if (!r.ok && state.pmtilesUrl === url) {
-      const fb = await probeTiles(FALLBACK_URL, PROBE_TIMEOUT_MS, protocol);
-      setSource(FALLBACK_URL, fb.bounds);
+  const src = state.source;
+  void probeSource(src, PROBE_TIMEOUT_MS).then(async (r) => {
+    if (!r.ok && state.source === src) {
+      const fb = await probeSource(FALLBACK, PROBE_TIMEOUT_MS, protocol);
+      setSource(FALLBACK, fb.bounds);
       setStatus('Karte nicht mehr erreichbar – Berlin-Karte geladen');
     }
   }).finally(() => { reprobing = false; });

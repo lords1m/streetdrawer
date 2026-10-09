@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { makePdf, drawAlong, findRoad, densify, mockNominatim } from './e2e-helpers.mjs';
+import { testTile } from './gen-test-tiles.mjs';
 
 const out = process.env.E2E_OUT || path.join(os.tmpdir(), 'sz-e2e');
 fs.mkdirSync(out, { recursive: true });
@@ -23,8 +24,8 @@ const check = (name, ok, extra = '') => { results.push({ name, ok }); console.lo
 // CHROMIUM_PATH: vorinstalliertes Chromium statt des zur Playwright-Version passenden
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
-// Weltkarte gesperrt: prüft den Fallback auf berlin.pmtiles und hält den Test unabhängig vom Bucket
-await ctx.route('https://storage.googleapis.com/**', (r) => r.abort());
+// Weltkarte (OpenFreeMap) gesperrt: prüft den Fallback auf berlin.pmtiles; OpenFreeMap selbst prüft der letzte Block
+await ctx.route('https://tiles.openfreemap.org/**', (r) => r.abort());
 // Nominatim-Attrappe (Ziele liegen im Berlin-Ausschnitt 13.08,52.33,13.77,52.68 – außer Paris)
 const nominatim = await mockNominatim(ctx, {
   'tempelhofer damm': [{ lat: '52.4840', lon: '13.3855', name: 'Tempelhofer Damm', display_name: 'Tempelhofer Damm, Tempelhof, Berlin, Deutschland', boundingbox: ['52.4820', '52.4860', '13.3835', '13.3875'], addresstype: 'road', place_rank: 26 }],
@@ -38,7 +39,7 @@ page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 try {
   await page.goto(base);
   await page.waitForFunction(() => window.__sz && window.__sz.map.loaded(), null, { timeout: 60000 });
-  check('Weltkarte nicht erreichbar → Berlin-Fallback', (await page.evaluate(() => window.__sz.state.pmtilesUrl)).endsWith('/berlin.pmtiles'), await page.textContent('#status'));
+  check('Weltkarte nicht erreichbar → Berlin-Fallback', (await page.evaluate(() => window.__sz.state.source.url)).endsWith('/berlin.pmtiles'), await page.textContent('#status'));
   await page.evaluate(() => { window.__sz.map.jumpTo({ center: [13.4132, 52.5219], zoom: 15.5 }); });
   await page.waitForFunction(() => window.__sz.netInfo.tiles && window.__sz.netInfo.tiles.includes('Segmente'), null, { timeout: 60000 });
   const info = await page.evaluate(() => window.__sz.netInfo.tiles);
@@ -252,6 +253,52 @@ try {
   await page.setViewportSize({ width: 390, height: 760 });
   await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(out, 'mobile.png') });
+
+  // ---------------- Weltkarte von OpenFreeMap (nachgebildet: TileJSON + Kacheln im OpenMapTiles-Schema), Paris
+  {
+    const ctx2 = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const TJ = 'https://tiles.openfreemap.org/planet';
+    await ctx2.route(TJ, (r) => r.fulfill({ json: {
+      tilejson: '3.0.0', tiles: [TJ + '/e2e/{z}/{x}/{y}.pbf'], minzoom: 0, maxzoom: 14,
+      bounds: [-180, -85.0511, 180, 85.0511], vector_layers: [{ id: 'transportation', fields: { class: 'String' } }],
+    }, headers: { 'Access-Control-Allow-Origin': '*' } }));
+    let tileRequests = 0;
+    await ctx2.route(TJ + '/e2e/**', (r) => {
+      tileRequests++;
+      const z = Number(new URL(r.request().url()).pathname.split('/').at(-3));
+      const t = testTile(z, 'openmaptiles');
+      r.fulfill(t ? { body: t, contentType: 'application/x-protobuf', headers: { 'Access-Control-Allow-Origin': '*' } } : { status: 204, headers: { 'Access-Control-Allow-Origin': '*' } });
+    });
+    await ctx2.route('https://tiles.openfreemap.org/fonts/**', (r) => r.abort());
+    const p2 = await ctx2.newPage();
+    p2.on('pageerror', (e) => errors.push(String(e)));
+    p2.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    await p2.goto(base + '#15.5/48.8566/2.3522');
+    await p2.waitForFunction(() => window.__sz && window.__sz.map.loaded(), null, { timeout: 60000 });
+    const src = await p2.evaluate(() => window.__sz.state.source);
+    check('Weltkarte von OpenFreeMap geladen', src.url === TJ && src.schema === 'openmaptiles', JSON.stringify(src));
+    await p2.waitForFunction(() => window.__sz.netInfo.tiles && window.__sz.netInfo.tiles.includes('Segmente'), null, { timeout: 60000 });
+    check('Straßennetz aus OpenMapTiles-Kacheln (Paris)', !(await p2.isVisible('#map-hint')) && tileRequests > 0, `${await p2.evaluate(() => window.__sz.netInfo.tiles)}, ${tileRequests} Kacheln`);
+    const roadP = await findRoad(p2);
+    if (!roadP) throw new Error('keine Straße in den OpenMapTiles-Kacheln');
+    const denseP = densify(roadP, 6, 29);
+    await p2.mouse.move(denseP[0][0], denseP[0][1]);
+    await p2.mouse.down();
+    for (const [x, y] of denseP) await p2.mouse.move(x, y);
+    await p2.mouse.up();
+    await p2.waitForFunction(() => window.__sz.strokes.length === 1, null, { timeout: 10000 });
+    const devP = await p2.evaluate((road) => {
+      const m = window.__sz.map;
+      const pts = window.__sz.strokes[0].parts.flatMap((p) => { const o = []; for (let i = 0; i < p.length; i += 2) o.push(m.project([p[i], p[i + 1]])); return o; });
+      const seg = (p, a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1]; const l2 = dx * dx + dy * dy; let t = l2 ? ((p.x - a[0]) * dx + (p.y - a[1]) * dy) / l2 : 0; t = Math.max(0, Math.min(1, t)); return Math.hypot(p.x - (a[0] + t * dx), p.y - (a[1] + t * dy)); };
+      let worst = 0;
+      for (const p of pts) { let best = Infinity; for (let i = 1; i < road.length; i++) best = Math.min(best, seg(p, road[i - 1], road[i])); worst = Math.max(worst, best); }
+      return { n: pts.length, worst };
+    }, roadP);
+    check('Strich rastet auf OpenFreeMap-Straße ein', devP.n >= 2 && devP.worst < 14, `Punkte ${devP.n}, max. Abstand ${devP.worst.toFixed(2)} px`);
+    await p2.screenshot({ path: path.join(out, 'openfreemap.png') });
+    await ctx2.close();
+  }
 
   check('Keine Konsolenfehler', errors.filter((e) => !/glyph|sprite|Failed to load resource|Could not compile fragment shader|protomaps\.github\.io/i.test(e)).length === 0, errors.slice(0, 3).join(' | '));
 } catch (e) {
